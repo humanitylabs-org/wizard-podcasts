@@ -13,7 +13,7 @@ A private podcast player for [Wizard OS](https://www.aiwizards.com/wizard-apps).
 
 - Only public feed enclosures are played or downloaded. Nothing is scraped.
 - Every outbound request (feeds, search, artwork, audio) accepts only `http`/`https`, resolves the host once, refuses loopback, private, link-local, CGNAT/Tailscale, multicast and reserved addresses, connects to that checked address, and re-checks every redirect.
-- Feeds ≤ 15 MB, artwork ≤ 5 MB, OPML ≤ 2 MB, episodes ≤ 1 GB (`PODCASTS_MAX_EPISODE_MB`), and a total storage cap. XML with DTDs/entities is refused.
+- Feeds ≤ 64 MB (`PODCASTS_MAX_FEED_MB`; parsed as a stream, so memory stays small), redirect chains ≤ 15 hops (each hop re-checked), artwork ≤ 5 MB, OPML ≤ 2 MB, episodes ≤ 1 GB (`PODCASTS_MAX_EPISODE_MB`), and a total storage cap. XML with DTDs/entities is refused.
 - Show notes are sanitized on the server (allow-list of text tags and http(s)/mailto links; no scripts, styles, frames, images or attributes) and rebuilt node by node in the browser. The page's CSP allows only its own scripts and styles.
 - MCP tools are box-only (refused when tailnet/forwarded headers are present); the gateway owns authentication.
 

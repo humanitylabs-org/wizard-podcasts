@@ -1,6 +1,6 @@
 services:
   wizard-podcasts:
-    image: ghcr.io/humanitylabs-org/wizard-podcasts:sha-e9ba8282ea88e1288afbfae7a6fab2fe9f02ab5f@sha256:77d555690475fc9ea55cf187d2ce0eba27dbb108a1463a474546a2289303093f
+    image: ghcr.io/humanitylabs-org/wizard-podcasts:sha-649f976baaebb6cf54cd97e6129dc1d99a23f761@sha256:3f888a951fdba81636f8afe158bd001bc61185288f4b9969cdceda6b3b071e0f
     restart: unless-stopped
     user: 1000:1000
     cap_drop: [ALL]
