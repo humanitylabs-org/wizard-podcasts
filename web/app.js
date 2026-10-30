@@ -157,6 +157,7 @@ function paint() {
   const v = currentView();
   for (const name of VIEWS) $('view-' + name).hidden = name !== v;
   $('top').hidden = v !== 'feed';
+  $('nav-back').hidden = v === 'feed';
   document.querySelector('.pc-app').dataset.view = v;
   if (v !== 'feed') $('main').scrollTop = 0;
 }
@@ -176,6 +177,7 @@ function popView() {
   if (!top) { $('main').scrollTop = feedScroll; loadFeed(); } else load(top.view, top.id);
   return true;
 }
+$('nav-back').onclick = popView;
 // A finishing action (mark played, unfollow) returns to the screen the owner came from: the previous view in the
 // app, or, when he arrived straight here (deep link from a chat), the screen before the app.
 function finish(message, undo) {
@@ -525,7 +527,8 @@ $('search-form').onsubmit = async event => {
 };
 function resultRow(item) {
   const li = el('li', 'pc-ep pc-result');
-  const main = el('div', 'wz-row');
+  const main = el('button', 'wz-row pc-result-open');
+  main.type = 'button';
   const img = el('img', 'pc-art pc-art-row'); img.alt = ''; img.loading = 'lazy';
   art(img, item.artwork);
   const text = el('span', 'wz-main');
@@ -535,19 +538,23 @@ function resultRow(item) {
   const btn = el('button', 'pc-follow');
   btn.type = 'button';
   let showId = item.show_id || null;
-  const paintBtn = on => { btn.textContent = on ? 'Following' : 'Follow'; btn.setAttribute('aria-pressed', String(on)); };
-  paintBtn(!!item.subscribed);
+  const paintBtn = on => {
+    btn.textContent = on ? 'Episodes' : 'Follow';
+    btn.dataset.followed = String(on);
+    main.disabled = !on;
+    main.setAttribute('aria-label', on ? 'Open ' + item.title : item.title);
+  };
+  const openShow = () => { if (showId) openView('show', showId); };
+  main.onclick = openShow;
+  paintBtn(!!showId);
   btn.onclick = async () => {
+    if (showId) { openShow(); return; }
     btn.disabled = true;
     try {
-      if (btn.getAttribute('aria-pressed') === 'true' && showId) {
-        await api('api/shows/' + showId + '/unsubscribe', {});
-        if (state.current?.show_id === showId) unloadPlayer();
-        showId = null; paintBtn(false);
-      } else {
-        const r = await api('api/subscribe', { url: item.feed_url });
-        showId = r.show.id; paintBtn(true);
-      }
+      const r = await api('api/subscribe', { url: item.feed_url });
+      showId = r.show.id;
+      paintBtn(true);
+      openShow();
     } catch (e) { say(e.message, 'error'); }
     finally { btn.disabled = false; }
   };
@@ -807,7 +814,7 @@ $('pl-mark').onclick = async () => {
 if (!W) {
   say('Wizard system functions are unavailable. Open Podcasts through Wizard.', 'error');
 } else {
-  W.ready({ name: 'wizard-podcasts', version: '0.3.0' });
+  W.ready({ name: 'wizard-podcasts', version: '0.3.1' });
   // Domain Back: close the nested view (find, show, episode, player); at the feed, the core decides.
   W.back.register({ canGoBack: () => state.stack.length > 0, back: () => popView() });
 }

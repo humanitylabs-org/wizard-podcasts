@@ -9,7 +9,7 @@
   "port": 9207,
   "categories": ["media"],
   "tipi_version": 5,
-  "version": "0.3.0",
+  "version": "0.3.1",
   "source": "https://github.com/humanitylabs-org/wizard-podcasts",
   "exposable": false,
   "supported_architectures": ["arm64", "amd64"],
