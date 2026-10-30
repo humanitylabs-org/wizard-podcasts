@@ -20,6 +20,19 @@
     <main class="wz-scroll" id="main">
 
       <section id="view-inbox" class="pc-view" data-tab="inbox" aria-label="Up next">
+        <div id="inbox-filters" class="pc-filters" hidden>
+          <div id="chips-shows" class="pc-chips" role="group" aria-label="Show"></div>
+          <div id="chips-more" class="pc-chips-more" hidden>
+            <div id="seg-kind" class="pc-seg" role="group" aria-label="Type">
+              <button type="button" class="pc-seg-b" data-kind="podcast" aria-pressed="false">Podcasts</button>
+              <button type="button" class="pc-seg-b" data-kind="youtube" aria-pressed="false">YouTube</button>
+            </div>
+            <div id="seg-state" class="pc-seg" role="group" aria-label="Progress">
+              <button type="button" class="pc-seg-b" data-state="unplayed" aria-pressed="false">Unplayed</button>
+              <button type="button" class="pc-seg-b" data-state="started" aria-pressed="false">Started</button>
+            </div>
+          </div>
+        </div>
         <div id="inbox-continue" class="wz-sec" hidden>
           <h2 class="wz-sec-h">Continue</h2>
           <ul class="wz-list" id="list-continue"></ul>
@@ -27,6 +40,10 @@
         <div id="inbox-new" class="wz-sec" hidden>
           <h2 class="wz-sec-h">New <span id="new-count" class="wz-count"></span></h2>
           <ul class="wz-list" id="list-new"></ul>
+        </div>
+        <div id="inbox-none" class="wz-empty pc-none" hidden>
+          <strong>Nothing here with this filter</strong>
+          <button type="button" class="wz-button secondary pc-gap" id="filter-clear">Show all</button>
         </div>
         <div id="inbox-empty" class="wz-empty" hidden>
           <div class="wz-tile" aria-hidden="true">♪</div>

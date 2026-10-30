@@ -10,6 +10,7 @@ from __future__ import annotations
 import html
 import json
 import os
+import re
 import struct
 import shutil
 import sqlite3
@@ -586,12 +587,80 @@ def show_detail(sid, limit=100, offset=0):
     return {'show': d, 'episodes': [episode_dict(e) for e in eps], 'offset': offset}
 
 
-def inbox(limit=100):
+INBOX_KINDS = ('podcast', 'youtube')
+INBOX_STATES = ('started', 'unplayed')
+_SHORT_TAIL = re.compile(r'\s+(?:podcast|show|pod)\s*$', re.I)
+
+
+def short_title(title):
+    """A chip-sized show name: 'The Tucker Carlson Show' -> 'Tucker Carlson', 'Joe Armstrong - AI & X' -> 'Joe Armstrong'."""
+    t = ' '.join((title or '').split())
+    full = t
+    t = re.split(r'\s+[-–—|:]\s+|:\s+|\s+\(', t, maxsplit=1)[0]
+    t = re.sub(r'^the\s+', '', t, flags=re.I)
+    t = _SHORT_TAIL.sub('', t).strip()
+    return t or full
+
+
+def _show_kind(feed_url):
+    return 'youtube' if youtube.is_feed(feed_url) else 'podcast'
+
+
+def inbox(limit=100, show_id=None, kind=None, state=None):
+    """Up next. Optional filters: show_id (one show), kind ('podcast'|'youtube'), state ('started'|'unplayed').
+    `filters` always describes the whole, unfiltered Up next so a screen can draw its chips from one call."""
+    if kind == 'rss':
+        kind = 'podcast'
+    if kind not in (None, '') and kind not in INBOX_KINDS:
+        raise Problem(400, "kind must be 'podcast' or 'youtube'.")
+    if state not in (None, '') and state not in INBOX_STATES:
+        raise Problem(400, "state must be 'started' or 'unplayed'.")
+    if show_id not in (None, ''):
+        try:
+            show_id = int(show_id)
+        except (TypeError, ValueError):
+            raise Problem(400, 'show_id must be a whole number.') from None
+    else:
+        show_id = None
+    kind, state = kind or None, state or None
+    limit = max(1, min(int(limit), 500))
     cont = q(EP_SELECT + 'WHERE e.position>0 AND e.played=0 ORDER BY e.position_at DESC LIMIT 20')
     seen = {r['id'] for r in cont}
-    new = [r for r in q(EP_SELECT + 'WHERE e.inbox=1 AND e.played=0 ORDER BY e.published DESC LIMIT ?', (limit,)) if r['id'] not in seen]
+    new = [r for r in q(EP_SELECT + 'WHERE e.inbox=1 AND e.played=0 ORDER BY e.published DESC') if r['id'] not in seen]
+    shows = {r['id']: r for r in q('SELECT id, title, feed_url, art_file FROM shows')}
+    kinds = {sid: _show_kind(r['feed_url']) for sid, r in shows.items()}
+    # facets over everything in Up next, before filtering
+    facet = {}
+    for r in cont + new:
+        f = facet.setdefault(r['show_id'], {'count': 0, 'started': 0, 'latest': 0})
+        f['count'] += 1
+        f['started'] += r['id'] in seen
+        f['latest'] = max(f['latest'], r['published'] or 0)
+    chips = []
+    for sid, f in sorted(facet.items(), key=lambda kv: (-kv[1]['latest'], kv[0])):
+        s = shows.get(sid)
+        if not s:
+            continue
+        title = s['title'] or urlsplit(s['feed_url']).hostname
+        chips.append({'id': sid, 'title': title, 'short_title': short_title(title), 'kind': kinds[sid],
+                      'artwork': f'api/shows/{sid}/art' if s['art_file'] else '',
+                      'unplayed': f['count'], 'started': f['started'], 'latest': f['latest']})
+    kind_counts = {k: sum(c['unplayed'] for c in chips if c['kind'] == k) for k in INBOX_KINDS}
+    filters = {'shows': chips, 'kinds': kind_counts, 'started': len(cont), 'unplayed': len(new), 'total': len(cont) + len(new)}
+    if show_id is not None:
+        cont = [r for r in cont if r['show_id'] == show_id]
+        new = [r for r in new if r['show_id'] == show_id]
+    if kind:
+        cont = [r for r in cont if kinds.get(r['show_id']) == kind]
+        new = [r for r in new if kinds.get(r['show_id']) == kind]
+    if state == 'started':
+        new = []
+    elif state == 'unplayed':
+        cont = []
     np = now_playing()
-    return {'continue': [episode_dict(r) for r in cont], 'new': [episode_dict(r) for r in new], 'now_playing': np}
+    return {'continue': [episode_dict(r) for r in cont], 'new': [episode_dict(r) for r in new[:limit]], 'now_playing': np,
+            'filter': {'show_id': show_id, 'kind': kind, 'state': state},
+            'filters': filters}
 
 
 def now_playing():
