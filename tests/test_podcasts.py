@@ -757,7 +757,7 @@ def test_inbox_sort_and_since():
         b = c.execute('INSERT INTO shows (feed_url, title, added_at, last_checked) VALUES (?,?,?,?)',
                       ('https://feeds.example.com/sort-b.xml', 'Other Show', now, now)).lastrowid
         rows = [(a, 's1', t0 + 100, 0), (a, 's2', t0 + 300, 0), (a, 's3', t0 + 200, 0), (b, 'o1', t0 + 250, 0),
-                (a, 's4', t0 + 150, 90)]  # s4 started (Continue)
+                (a, 's4', t0 + 150, 90), (b, 't1', t0 + 50, 0), (b, 't2', t0 + 50, 0)]  # s4 started (Continue); t1/t2 same time
         for sid, guid, pub, pos in rows:
             c.execute('INSERT INTO episodes (show_id, guid, title, published, enclosure_url, first_seen, inbox, position, position_at) '
                       'VALUES (?,?,?,?,?,?,1,?,?)', (sid, guid, guid, pub, 'https://cdn.example.com/' + guid + '.mp3', now, pos, now if pos else 0))
@@ -779,6 +779,9 @@ def test_inbox_sort_and_since():
         # oldest first reverses the new list; Continue is untouched
         st, d = get(f'?show_id={a}&sort=oldest')
         assert st == 200 and new(d) == ['s1', 's3', 's2'] and [e['title'] for e in d['continue']] == ['s4'] and d['filter']['sort'] == 'oldest'
+        # same publish time: Oldest first is the exact reverse of Newest first
+        st, d = get(f'?show_id={b}')
+        assert new(d) == ['o1', 't2', 't1'] and new(get(f'?show_id={b}&sort=oldest')[1]) == ['t1', 't2', 'o1']
         # oldest + limit keeps the oldest ones
         st, d = get(f'?show_id={a}&sort=oldest&limit=2')
         assert new(d) == ['s1', 's3']

@@ -641,7 +641,7 @@ def inbox(limit=100, show_id=None, kind=None, state=None, sort=None, since=None)
     limit = max(1, min(int(limit), 500))
     cont = q(EP_SELECT + 'WHERE e.position>0 AND e.played=0 ORDER BY e.position_at DESC LIMIT 20')
     seen = {r['id'] for r in cont}
-    new = [r for r in q(EP_SELECT + 'WHERE e.inbox=1 AND e.played=0 ORDER BY e.published DESC') if r['id'] not in seen]
+    new = [r for r in q(EP_SELECT + 'WHERE e.inbox=1 AND e.played=0 ORDER BY e.published DESC, e.id DESC') if r['id'] not in seen]
     shows = {r['id']: r for r in q('SELECT id, title, feed_url, art_file FROM shows')}
     kinds = {sid: _show_kind(r['feed_url']) for sid, r in shows.items()}
     # facets over everything in Up next, before filtering

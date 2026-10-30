@@ -223,7 +223,7 @@ html.wz-hosted .pc-dock { background: color-mix(in srgb, var(--wz-base) 55%, tra
 .pc-day-h { position: sticky; top: -4px; z-index: 2; display: flex; align-items: center; gap: 8px; margin: 0 calc(-1 * var(--wz-gutter, 10px));
   padding: 12px calc(var(--wz-gutter, 10px) + 8px) 8px; font-size: var(--wz-text-md, .875rem); font-weight: 750; line-height: 1.3; letter-spacing: 0; text-transform: none; color: var(--ink);
   background: color-mix(in srgb, var(--canvas) 94%, transparent); border-bottom: 1px solid var(--line); backdrop-filter: blur(18px); -webkit-backdrop-filter: blur(18px); }
-html.wz-hosted .pc-day-h { background: color-mix(in srgb, var(--wz-base) 82%, transparent); }
+html.wz-hosted .pc-day-h { background: color-mix(in srgb, var(--wz-base) 95%, transparent); }
 .pc-day-n { min-width: 22px; padding: 0 7px; border-radius: var(--r-pill); background: var(--fill-2); color: var(--ink-2); font-size: .75rem; line-height: 20px; font-weight: 750; text-align: center; font-variant-numeric: tabular-nums; }
 .pc-group > .wz-list { padding-top: 2px; }
 /* when an episode was posted leads its meta line, a step stronger than the rest */
