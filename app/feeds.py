@@ -17,6 +17,8 @@ CONTENT = '{http://purl.org/rss/1.0/modules/content/}'
 ATOM = '{http://www.w3.org/2005/Atom}'
 PODCAST = '{https://podcastindex.org/namespace/1.0}'
 MEDIA = '{http://search.yahoo.com/mrss/}'
+YT = '{http://www.youtube.com/xml/schemas/2015}'
+YT_VIDEO_ID = re.compile(r'^[0-9A-Za-z_-]{11}$')
 
 MAX_NOTES = 100_000
 MAX_EPISODES = 3000
@@ -253,8 +255,12 @@ def _atom_link(el, rel):
 
 def _parse_atom(root, base, episodes):
     alt = _atom_link(root, 'alternate')
+    title = _text(root, ATOM + 'title')
+    if root.find(YT + 'channelId') is not None or root.find(YT + 'playlistId') is not None:
+        # YouTube uploads feeds: the playlist feed is titled "Videos"; the channel is the author.
+        title = _text(root, ATOM + 'author/' + ATOM + 'name') or title
     return {
-        'title': _clean_line(_text(root, ATOM + 'title'), 300) or 'Untitled podcast',
+        'title': _clean_line(title, 300) or 'Untitled podcast',
         'author': _clean_line(_text(root, ATOM + 'author/' + ATOM + 'name'), 300),
         'description': sanitize_html(_text(root, ATOM + 'subtitle'))[:20000],
         'image': _http_url(_text(root, ATOM + 'logo') or _text(root, ATOM + 'icon'), base),
@@ -263,7 +269,34 @@ def _parse_atom(root, base, episodes):
     }
 
 
+def _youtube_entry(entry, vid):
+    alt = _atom_link(entry, 'alternate')
+    href = alt.get('href') if alt is not None else ''
+    if '/shorts/' in (href or ''):
+        return None  # Shorts are not episodes
+    group = entry.find(MEDIA + 'group')
+    thumb = group.find(MEDIA + 'thumbnail') if group is not None else None
+    desc = _text(group, MEDIA + 'description') if group is not None else ''
+    watch = 'https://www.youtube.com/watch?v=' + vid
+    return {
+        'guid': 'yt:' + vid,
+        'title': _clean_line(_text(entry, ATOM + 'title'), 500) or 'Untitled episode',
+        'published': parse_date(_text(entry, ATOM + 'published') or _text(entry, ATOM + 'updated')),
+        'duration': 0,
+        'url': watch,      # audio comes from the YouTube Music connector, keyed by this video id
+        'mime': '',        # set from the connector's Content-Type when the download lands
+        'length': 0,
+        'notes': sanitize_html(html.escape(desc)),
+        'link': watch,
+        'image': _http_url(thumb.get('url'), '') if thumb is not None else '',
+        'transcript_url': '',
+    }
+
+
 def _atom_entry(entry, base):
+    vid = _text(entry, YT + 'videoId')
+    if vid:
+        return _youtube_entry(entry, vid) if YT_VIDEO_ID.match(vid) else None
     enc = _atom_link(entry, 'enclosure')
     if enc is None:
         return None

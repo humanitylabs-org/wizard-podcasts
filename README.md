@@ -3,6 +3,7 @@
 A private podcast player for [Wizard OS](https://www.aiwizards.com/wizard-apps). Install it from the Wizard App Store (`wam install wizard-podcasts`).
 
 - **Follow shows**: search the free Apple Podcasts directory (iTunes Search API), paste any RSS/Atom feed, or import OPML. Export your list as OPML any time.
+- **YouTube channels as shows**: paste a channel URL (`youtube.com/@handle`, `/channel/UC…`) or `@handle`, or pick a channel from search. Episodes are the channel's long-form uploads from YouTube's public feed (`feeds/videos.xml?playlist_id=UULF…`, so no Shorts or live streams), and arrive as **audio only** through the installed **YouTube Music** app (`wizard-youtube-music`, contract `wizard.music-source/1`, `/api/music/audio/<videoId>`, including its home relay). Same Up next, download queue, storage cap, saved place and mark played as podcasts; those shows carry a small YouTube label. Without YouTube Music the shows still update and say which app to get.
 - **Up next**: started episodes first, then new ones. Feeds are checked in the background (hourly by default).
 - **Auto-download** new episodes into the app's own storage, with a storage cap (default 2 GB). When full, played downloads go first, then the oldest unstarted ones. Per-episode limit 1 GB.
 - **Play** in the app: speed 0.8–3×, back 15 s / forward 30 s, seeking (HTTP Range), lock-screen controls where the browser supports them. Episodes that are not downloaded yet stream from the publisher through the app.
@@ -11,7 +12,7 @@ A private podcast player for [Wizard OS](https://www.aiwizards.com/wizard-apps).
 
 ## Safety
 
-- Only public feed enclosures are played or downloaded. Nothing is scraped.
+- Podcast audio is only the public feed enclosure. YouTube audio comes only from the YouTube Music connector; Podcasts never contacts googlevideo itself. YouTube lookups (channel page, uploads feed, channel search, avatars) go only to youtube.com, ytimg.com, ggpht.com and yt3.googleusercontent.com, checked on every redirect hop on top of the public-address guard.
 - Every outbound request (feeds, search, artwork, audio) accepts only `http`/`https`, resolves the host once, refuses loopback, private, link-local, CGNAT/Tailscale, multicast and reserved addresses, connects to that checked address, and re-checks every redirect.
 - Feeds ≤ 64 MB (`PODCASTS_MAX_FEED_MB`; parsed as a stream, so memory stays small), redirect chains ≤ 15 hops (each hop re-checked), artwork ≤ 5 MB, OPML ≤ 2 MB, episodes ≤ 1 GB (`PODCASTS_MAX_EPISODE_MB`), and a total storage cap. XML with DTDs/entities is refused.
 - Show notes are sanitized on the server (allow-list of text tags and http(s)/mailto links; no scripts, styles, frames, images or attributes) and rebuilt node by node in the browser. The page's CSP allows only its own scripts and styles.
@@ -33,6 +34,6 @@ python3 -m pytest -q tests
 wam check .                                                     # Wizard builder checks
 ```
 
-Layout: `app/server.py` (HTTP + MCP), `app/podcasts.py` (service layer, downloads, refresh), `app/feeds.py` (RSS/Atom/OPML parsing, sanitizer), `app/netfetch.py` (SSRF-guarded fetcher), `web/` (view: vanilla JS on the shared Wizard kit and `WizardApp` client), `runtipi/` (store recipe). The image is built for amd64 and arm64 by the shared Wizard app-image workflow and pinned by digest in `runtipi/docker-compose.yml`.
+Layout: `app/server.py` (HTTP + MCP), `app/podcasts.py` (service layer, downloads, refresh), `app/feeds.py` (RSS/Atom/OPML parsing, sanitizer), `app/netfetch.py` (SSRF-guarded fetcher), `app/youtube.py` (channel resolve/search, audio through the music-source connector), `web/` (view: vanilla JS on the shared Wizard kit and `WizardApp` client), `runtipi/` (store recipe). The image is built for amd64 and arm64 by the shared Wizard app-image workflow and pinned by digest in `runtipi/docker-compose.yml`.
 
 License: GPL-3.0-only (adapts the Wizard App Manager hello-wizard template; see NOTICE.md).

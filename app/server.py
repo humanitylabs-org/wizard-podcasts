@@ -13,12 +13,13 @@ from urllib.parse import parse_qs, urlsplit
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import netfetch  # noqa: E402
+import youtube  # noqa: E402
 import podcasts as P  # noqa: E402
 from podcasts import Problem  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 APP_ID = 'wizard-podcasts'
-VERSION = '0.1.3'
+VERSION = '0.2.0'
 PORT = int(os.environ.get('PORT', '9207'))
 PREFIX = '/' + APP_ID
 STATIC_TYPES = {'.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8',
@@ -54,11 +55,11 @@ def _int(v, name):
 TOOLS = [
     {'name': 'podcasts_status', 'description': 'Podcasts overview: number of shows, new episodes in Up next, download queue and failures, storage used vs cap, refresh interval, and what is playing (with its saved position). Call first.',
      'inputSchema': {'type': 'object', 'properties': {}}},
-    {'name': 'podcasts_search', 'description': "Search the public Apple Podcasts directory (free iTunes Search API) by name. Returns shows with their public RSS feed_url; pass that feed_url to podcasts_subscribe. 'subscribed' marks shows already followed.",
+    {'name': 'podcasts_search', 'description': "Search the public Apple Podcasts directory (free iTunes Search API) and YouTube channels by name. 'results' are podcasts with their public RSS feed_url; 'youtube' are YouTube channels (feed_url is the channel URL). Pass either feed_url to podcasts_subscribe. A YouTube channel URL or @handle as the query looks up that channel. 'subscribed' marks shows already followed.",
      'inputSchema': {'type': 'object', 'properties': {'query': {'type': 'string', 'description': 'Show name or topic, e.g. "Darknet Diaries".'},
                                                       'limit': {'type': 'integer', 'minimum': 1, 'maximum': 50}}, 'required': ['query']}},
-    {'name': 'podcasts_subscribe', 'description': 'Follow a podcast by its public RSS/Atom feed URL (from podcasts_search or pasted by the owner). Idempotent. The newest episode goes to Up next and downloads automatically when auto-download is on; new episodes keep arriving in the background.',
-     'inputSchema': {'type': 'object', 'properties': {'feed_url': {'type': 'string', 'description': 'http(s) feed address.'},
+    {'name': 'podcasts_subscribe', 'description': 'Follow a podcast by its public RSS/Atom feed URL, or a YouTube channel by its URL (youtube.com/@handle, /channel/UC...) or bare @handle; YouTube episodes are long-form uploads (no Shorts), downloaded as audio only through the YouTube Music app. Idempotent. The newest episode goes to Up next and downloads automatically when auto-download is on; new episodes keep arriving in the background.',
+     'inputSchema': {'type': 'object', 'properties': {'feed_url': {'type': 'string', 'description': 'http(s) feed address, YouTube channel URL, or @handle.'},
                                                       'auto_download': {'type': 'boolean'}}, 'required': ['feed_url']}},
     {'name': 'podcasts_list', 'description': "List shows (no show_id), or one show's episodes newest first (show_id). view='inbox' returns Up next: 'continue' (started, unfinished) then 'new' episodes. Episode rows include id, played, position (seconds), duration and download state.",
      'inputSchema': {'type': 'object', 'properties': {'view': {'type': 'string', 'enum': ['shows', 'inbox', 'episodes']},
@@ -313,8 +314,12 @@ class Handler(BaseHTTPRequestHandler):
         rng = self.headers.get('Range')
         if rng and RANGE.match(rng.strip()):
             headers['Range'] = rng.strip()
+        vid = youtube.video_id(row['enclosure_url'])
         try:
-            up = netfetch.open_url(row['enclosure_url'], headers=headers, timeout=30, method=self.command)
+            if vid:  # YouTube episode: audio only, through the music-source connector (Range forwarded)
+                up = youtube.open_audio(vid, headers)
+            else:
+                up = netfetch.open_url(row['enclosure_url'], headers=headers, timeout=30, method=self.command)
         except netfetch.FetchError as e:
             return self.send(502, {'error': str(e)})
         try:

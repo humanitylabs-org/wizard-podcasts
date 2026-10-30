@@ -240,6 +240,12 @@ function renderInbox(data) {
 function badge(n) { $('tab-badge').hidden = !n; $('tab-badge').textContent = n > 99 ? '99+' : String(n); }
 
 // ------------------------------------------------------------------ shows
+function ytLabel() {
+  const t = el('span', 'pc-yt', 'YouTube');
+  t.title = 'A YouTube channel. Episodes are audio only, through the YouTube Music app.';
+  return t;
+}
+
 function renderShows(data) {
   const grid = $('shows-grid');
   grid.replaceChildren();
@@ -251,6 +257,7 @@ function renderShows(data) {
     if (!s.artwork) { const ph = el('span', 'pc-art pc-art-tile pc-art-ph', (s.title || '?').slice(0, 1)); ph.setAttribute('aria-hidden', 'true'); b.append(ph); }
     else b.append(img);
     b.append(el('b', 'pc-clamp', s.title));
+    if (s.source === 'youtube') b.append(ytLabel());
     b.append(el('small', '', s.pending ? 'Loading…' : s.last_error ? 'Feed problem' : s.new ? s.new + ' new' : s.episodes + ' episodes'));
     b.onclick = () => openView('show', s.id);
     grid.append(b);
@@ -272,6 +279,7 @@ function renderShow(data, append = false) {
   art($('show-art'), s.artwork);
   $('show-title').textContent = s.title;
   $('show-meta').textContent = [s.author, s.episodes + ' episodes', s.new ? s.new + ' new' : ''].filter(Boolean).join(' · ');
+  $('show-yt').hidden = s.source !== 'youtube';
   $('show-auto').setAttribute('aria-pressed', String(s.auto_download));
   $('show-auto').textContent = s.auto_download ? 'Auto-download on' : 'Auto-download off';
   $('show-error').hidden = !s.last_error;
@@ -379,7 +387,17 @@ $('search-form').onsubmit = async event => {
     const r = await api('api/search?q=' + encodeURIComponent(text));
     list.replaceChildren();
     for (const item of r.results) list.append(resultRow(item));
-    $('search-note').textContent = r.results.length ? r.results.length + ' shows from the Apple Podcasts directory' : 'No shows found. Try another name, or paste the feed address.';
+    const yt = r.youtube || [];
+    if (yt.length) {
+      const h = el('li', 'pc-result-h', 'YouTube channels');
+      h.setAttribute('role', 'presentation');
+      list.append(h);
+      for (const item of yt) list.append(resultRow(item));
+    }
+    const notes = [];
+    if (r.results.length) notes.push(r.results.length + ' shows from the Apple Podcasts directory');
+    if (yt.length) notes.push(yt.length + ' YouTube channel' + (yt.length > 1 ? 's' : ''));
+    $('search-note').textContent = notes.length ? notes.join(' · ') : 'No shows found. Try another name, or paste the feed address.';
   } catch (e) { $('search-note').textContent = ''; say(e.message, 'error'); }
   finally { $('search-go').disabled = false; }
 };
@@ -389,7 +407,8 @@ function resultRow(item) {
   const img = el('img', 'pc-art pc-art-row'); img.alt = ''; img.loading = 'lazy';
   art(img, item.artwork);
   const text = el('span', 'wz-main');
-  text.append(el('b', 'pc-clamp', item.title), el('small', '', [item.author, item.genre].filter(Boolean).join(' · ')));
+  text.append(el('b', 'pc-clamp', item.title), el('small', '', [item.author, item.source === 'youtube' ? item.subscribers : item.genre].filter(Boolean).join(' · ')));
+  if (item.source === 'youtube') text.append(ytLabel());
   main.append(img, text);
   const btn = el('button', item.subscribed ? 'wz-button secondary pc-follow' : 'wz-button pc-follow', item.subscribed ? 'Following' : 'Follow');
   btn.type = 'button';

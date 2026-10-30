@@ -7,8 +7,8 @@ Base: the app root (`/` on port 9207, or `/wizard-podcasts/` through the Wizard 
 | Method | Path | Returns |
 |---|---|---|
 | GET | `/healthz` | `{ok, app, version}` |
-| GET | `/api/status` | counts, download queue/failures, `storage_used_mb`, `storage_cap_mb`, `now_playing`, settings |
-| GET | `/api/search?q=&limit=` | Apple Podcasts directory results `{title, author, feed_url, artwork, genre, subscribed}` |
+| GET | `/api/status` | counts, download queue/failures, `storage_used_mb`, `storage_cap_mb`, `now_playing`, settings, `youtube: {shows, installed, ready, playback, message}` (the YouTube Music connector) |
+| GET | `/api/search?q=&limit=` | `results`: Apple Podcasts directory `{title, author, feed_url, artwork, genre, subscribed, source:"rss"}`; `youtube`: channels `{title, author (handle), feed_url (channel URL), artwork, subscribers, channel_id, subscribed, source:"youtube"}`. A channel URL or `@handle` as `q` returns that one channel. |
 | GET | `/api/shows` | `{shows: [show]}` with `episodes`, `unplayed`, `new`, `downloaded` counts |
 | GET | `/api/shows/{id}?limit=&offset=` | `{show, episodes: [episode]}` newest first |
 | GET | `/api/shows/{id}/art` | cached artwork image |
@@ -26,7 +26,7 @@ Episode fields: `id, show_id, show_title, title, published (unix), duration (s),
 
 | Method | Path | Body | Effect |
 |---|---|---|---|
-| POST | `/api/subscribe` | `{url, auto_download?}` | follow a feed (idempotent); newest episode to Up next and download queue |
+| POST | `/api/subscribe` | `{url, auto_download?}` | follow a feed, a YouTube channel URL or an `@handle` (idempotent); newest episode to Up next and download queue. Shows carry `source: "rss"\|"youtube"`. |
 | POST | `/api/shows/{id}` | `{auto_download}` | per-show auto-download |
 | POST | `/api/shows/{id}/refresh` | `{}` | check that feed now |
 | POST | `/api/shows/{id}/unsubscribe` | `{}` | unfollow, delete its downloads |

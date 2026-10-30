@@ -75,10 +75,15 @@ class FakeResp:
 
 
 FEEDS = {}
+PAGES = {}
 
 
-def fake_open(url, headers=None, timeout=20, method='GET'):
+def fake_open(url, headers=None, timeout=20, method='GET', allow=None):
     netfetch.check_url(url)
+    if allow is not None:
+        assert allow(netfetch.urlsplit(url).hostname), url
+    if url in PAGES:
+        return FakeResp(200, PAGES[url], {'Content-Type': 'text/html'}, url)
     if url in FEEDS:
         return FakeResp(200, FEEDS[url], {'Content-Type': 'application/rss+xml', 'ETag': '"e1"'}, url)
     if url.endswith('.mp3') or url.endswith('.m4a'):
@@ -94,8 +99,8 @@ def fake_open(url, headers=None, timeout=20, method='GET'):
     return FakeResp(404, b'', {}, url)
 
 
-def fake_get_bytes(url, cap, what='response', headers=None, timeout=25):
-    r = fake_open(url, headers)
+def fake_get_bytes(url, cap, what='response', headers=None, timeout=25, allow=None):
+    r = fake_open(url, headers, allow=allow)
     if r.status >= 400:
         raise netfetch.FetchError(f'The server answered {r.status} for that {what}.')
     return r.status, r.read_capped(cap, what), r
@@ -465,3 +470,188 @@ def test_opml_import_and_unsubscribe():
     assert req('GET', f'/api/shows/{sid}')[0].status == 404
     r, body = req('GET', '/api/opml')
     assert r.status == 200 and b'atom.xml' not in body
+
+
+# ------------------------------------------------------------------ YouTube channels as shows
+import struct  # noqa: E402
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer  # noqa: E402
+
+import youtube  # noqa: E402
+
+CID = 'UC' + 'a' * 21 + 'Q'
+YT_FEED = ("""<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns:yt="http://www.youtube.com/xml/schemas/2015" xmlns:media="http://search.yahoo.com/mrss/" xmlns="http://www.w3.org/2005/Atom">
+ <id>yt:playlist:UULF%s</id><yt:playlistId>UULF%s</yt:playlistId><yt:channelId>%s</yt:channelId><title>Videos</title>
+ <author><name>Test Channel</name><uri>https://www.youtube.com/channel/%s</uri></author>
+ <entry><id>yt:video:vidAAAAAAA2</id><yt:videoId>vidAAAAAAA2</yt:videoId><title>Long talk 2</title>
+  <link rel="alternate" href="https://www.youtube.com/watch?v=vidAAAAAAA2"/><published>2026-10-28T13:31:29+00:00</published>
+  <media:group><media:title>Long talk 2</media:title><media:thumbnail url="https://i3.ytimg.com/vi/vidAAAAAAA2/hqdefault.jpg"/>
+  <media:description>Line one &lt;script&gt;
+https://example.com/link</media:description></media:group></entry>
+ <entry><id>yt:video:shortAAAAA1</id><yt:videoId>shortAAAAA1</yt:videoId><title>A short</title>
+  <link rel="alternate" href="https://www.youtube.com/shorts/shortAAAAA1"/><published>2026-10-29T13:31:29+00:00</published></entry>
+ <entry><id>yt:video:vidAAAAAAA1</id><yt:videoId>vidAAAAAAA1</yt:videoId><title>Long talk 1</title>
+  <link rel="alternate" href="https://www.youtube.com/watch?v=vidAAAAAAA1"/><published>2026-10-20T13:31:29+00:00</published></entry>
+</feed>""" % (CID[2:], CID[2:], CID, CID)).encode()
+YT_PAGE = ('<html><head><link rel="canonical" href="https://www.youtube.com/channel/%s">'
+           '<meta property="og:title" content="Test Channel"><meta property="og:image" content="https://yt3.googleusercontent.com/abc=s900">'
+           '<meta property="og:description" content="About the channel"></head></html>' % CID).encode()
+
+
+def _m4a(seconds, pad=4000):
+    mvhd = struct.pack('>B3xIIII', 0, 0, 0, 1000, seconds * 1000) + b'\0' * 80
+    moov = struct.pack('>I4s', 8 + 8 + len(mvhd), b'moov') + struct.pack('>I4s', 8 + len(mvhd), b'mvhd') + mvhd
+    ftyp = struct.pack('>I4s', 16, b'ftyp') + b'M4A \0\0\0\0'
+    mdat = struct.pack('>I4s', 8 + pad, b'mdat') + bytes(range(256)) * (pad // 256) + b'\0' * (pad % 256)
+    return ftyp + moov + mdat
+
+
+YT_AUDIO = _m4a(754)
+
+
+class Connector(BaseHTTPRequestHandler):
+    mode = 'ok'
+    hits = []
+
+    def log_message(self, *a):
+        pass
+
+    def _send(self, code, body, ctype='application/json', extra=None):
+        self.send_response(code)
+        self.send_header('Content-Type', ctype)
+        self.send_header('Content-Length', str(len(body)))
+        for k, v in (extra or {}).items():
+            self.send_header(k, v)
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_GET(self):
+        Connector.hits.append((self.path, self.headers.get('Range')))
+        if self.path == '/api/status':
+            return self._send(200, json.dumps({'contract': 'wizard.music-source/1', 'ready': True,
+                                               'playback': {'state': 'ok', 'message': 'Working.'}}).encode())
+        if not self.path.startswith('/api/music/audio/'):
+            return self._send(404, b'{}')
+        if Connector.mode == 'blocked':
+            return self._send(502, b'{"error": "blocked"}')
+        data, rng = YT_AUDIO, self.headers.get('Range')
+        if rng:
+            a, b = rng[6:].split('-')
+            a, b = int(a), int(b or len(data) - 1)
+            return self._send(206, data[a:b + 1], 'audio/mp4', {'Content-Range': f'bytes {a}-{b}/{len(data)}'})
+        return self._send(200, data, 'audio/mp4')
+
+
+@pytest.fixture
+def connector(monkeypatch):
+    srv = ThreadingHTTPServer(('127.0.0.1', 0), Connector)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    monkeypatch.setattr(youtube, 'SOURCES', [('wizard-youtube-music', f'http://127.0.0.1:{srv.server_address[1]}')])
+    P._yt_status['at'] = 0
+    Connector.mode, Connector.hits = 'ok', []
+    yield srv
+    try:
+        srv.shutdown()
+    except Exception:
+        pass
+
+
+def test_youtube_refs_and_hosts():
+    assert youtube.parse_ref('@Fireship') == {'page': 'https://www.youtube.com/@Fireship'}
+    assert youtube.parse_ref('https://www.youtube.com/@ras.mic/videos') == {'page': 'https://www.youtube.com/@ras.mic'}
+    assert youtube.parse_ref('youtube.com/channel/' + CID) == {'channel_id': CID}
+    assert youtube.parse_ref('https://m.youtube.com/c/Name') == {'page': 'https://www.youtube.com/c/Name'}
+    assert youtube.parse_ref(youtube.feed_url(CID)) == {'channel_id': CID}
+    assert youtube.parse_ref(youtube.channel_feed_url(CID)) == {'channel_id': CID}
+    for no in ('https://feeds.example.com/x.xml', 'https://youtube.com.evil.example/@x', 'Fireship', 'https://www.youtube.com/watch?v=abc'):
+        assert youtube.parse_ref(no) is None, no
+    assert youtube.host_allowed('i3.ytimg.com') and youtube.host_allowed('yt3.ggpht.com') and youtube.host_allowed('yt3.googleusercontent.com')
+    assert not youtube.host_allowed('evilyoutube.com') and not youtube.host_allowed('lh3.googleusercontent.com')
+    assert youtube.video_id('https://www.youtube.com/watch?v=vidAAAAAAA2') == 'vidAAAAAAA2'
+    assert youtube.video_id('https://cdn.example.com/watch?v=vidAAAAAAA2') is None
+
+
+def test_youtube_feed_skips_shorts_and_uses_channel_name():
+    show = feeds.parse_feed(YT_FEED)
+    assert show['title'] == 'Test Channel'
+    assert [e['guid'] for e in show['episodes']] == ['yt:vidAAAAAAA2', 'yt:vidAAAAAAA1']
+    e = show['episodes'][0]
+    assert e['url'] == 'https://www.youtube.com/watch?v=vidAAAAAAA2' and e['image'].startswith('https://i3.ytimg.com/')
+    assert '<script' not in e['notes'] and '&lt;script&gt;' in e['notes']
+
+
+def test_youtube_fetch_never_leaves_youtube_hosts(monkeypatch):
+    _chain_conn(monkeypatch, {youtube.feed_url(CID): 'https://tracker.example/feed.xml'})
+    with pytest.raises(netfetch.FetchError, match='not a YouTube address'):
+        ORIG_OPEN(youtube.feed_url(CID), allow=youtube.host_allowed)
+
+
+def test_mp4_duration(tmp_path):
+    f = tmp_path / 'a.m4a'
+    f.write_bytes(YT_AUDIO)
+    assert P.mp4_duration(f) == 754
+    f.write_bytes(b'not an mp4')
+    assert P.mp4_duration(f) == 0
+
+
+def _ep(eid):
+    return json.loads(req('GET', f'/api/episodes/{eid}')[1])
+
+
+def test_youtube_channel_subscribe_download_play_and_degrade(connector):
+    origin = {'Origin': f'http://127.0.0.1:{PORT}'}
+    PAGES['https://www.youtube.com/@testchan'] = YT_PAGE
+    FEEDS[youtube.feed_url(CID)] = YT_FEED
+    PAGES['https://www.youtube.com/results?search_query=test%20chan&sp=EgIQAg%253D%253D'] = (
+        '<script>var ytInitialData = ' + json.dumps({'contents': [{'channelRenderer': {
+            'channelId': CID, 'title': {'simpleText': 'Test Channel'}, 'subscriberCountText': {'simpleText': '@testchan'},
+            'videoCountText': {'simpleText': '12K subscribers'}, 'navigationEndpoint': {'browseEndpoint': {'canonicalBaseUrl': '/@testchan'}},
+            'thumbnail': {'thumbnails': [{'url': '//yt3.ggpht.com/x=s88'}]}}}]}) + ';</script>').encode()
+    r, body = req('GET', '/api/search?q=test%20chan')
+    found = json.loads(body)
+    assert r.status == 200 and found['youtube'][0]['channel_id'] == CID and found['youtube'][0]['subscribers'] == '12K subscribers'
+    assert found['youtube'][0]['artwork'] == 'https://yt3.ggpht.com/x=s88' and found['youtube'][0]['subscribed'] is False
+    r, body = req('POST', '/api/subscribe', {'url': '@testchan'}, origin)
+    assert r.status == 200, body
+    show = json.loads(body)['show']
+    sid = show['id']
+    assert show['source'] == 'youtube' and show['title'] == 'Test Channel' and show['feed_url'] == youtube.feed_url(CID)
+    assert show['episodes'] == 2 and show['link'] == youtube.channel_url(CID)
+    # every way of naming the channel is the same show
+    r, body = req('POST', '/api/subscribe', {'url': 'https://www.youtube.com/channel/' + CID}, origin)
+    assert json.loads(body)['already_subscribed'] is True
+    assert json.loads(req('GET', '/api/search?q=test%20chan')[1])['youtube'][0]['subscribed'] is True
+    # the newest long-form video is in Up next and downloads through the connector, audio only
+    new = [e for e in json.loads(req('GET', '/api/inbox')[1])['new'] if e['show_id'] == sid]
+    assert [e['title'] for e in new] == ['Long talk 2']
+    eid = new[0]['id']
+    assert wait_for(lambda: _ep(eid)['download']['state'] == 'done')
+    d = _ep(eid)
+    assert d['file'] == f'episodes/{sid}/{eid}.m4a' and d['mime'] == 'audio/mp4' and d['duration'] == 754
+    assert ('/api/music/audio/vidAAAAAAA2', None) in Connector.hits
+    r, data = req('GET', f'/api/episodes/{eid}/audio', headers={'Range': 'bytes=0-99'})
+    assert r.status == 206 and data == YT_AUDIO[:100] and r.getheader('Content-Type') == 'audio/mp4'
+    # not downloaded: streaming with Range goes through the connector too
+    other = [e for e in json.loads(req('GET', f'/api/shows/{sid}')[1])['episodes'] if e['id'] != eid][0]
+    r, data = req('GET', f'/api/episodes/{other["id"]}/audio', headers={'Range': 'bytes=10-19'})
+    assert r.status == 206 and data == YT_AUDIO[10:20]
+    # progress and mark played work the same as RSS
+    assert req('POST', f'/api/episodes/{eid}/progress', {'position': 30, 'duration': 754}, origin)[0].status == 200
+    assert req('POST', f'/api/episodes/{eid}/mark', {'played': True}, origin)[0].status == 200
+    assert _ep(eid)['played'] is True
+    # status reports the connector
+    st = json.loads(req('GET', '/api/status')[1])
+    assert st['youtube']['installed'] is True and st['youtube']['shows'] == 1
+    # YouTube refuses the network -> a clear message
+    Connector.mode = 'blocked'
+    req('POST', f'/api/episodes/{other["id"]}/download', {}, origin)
+    assert wait_for(lambda: _ep(other['id'])['download']['state'] == 'failed')
+    assert 'home relay' in _ep(other['id'])['download']['error']
+    # connector not installed -> says which app to get
+    connector.shutdown()
+    connector.server_close()
+    P._yt_status['at'] = 0
+    req('POST', f'/api/episodes/{other["id"]}/download', {}, origin)
+    assert wait_for(lambda: 'YouTube Music app' in (_ep(other['id'])['download']['error'] or ''))
+    assert json.loads(req('GET', '/api/status')[1])['youtube']['installed'] is False
+    assert req('POST', f'/api/shows/{sid}/unsubscribe', {}, origin)[0].status == 200

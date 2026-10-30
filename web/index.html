@@ -55,12 +55,12 @@
       <section id="view-add" class="pc-view" data-tab="add" aria-label="Add a podcast" hidden>
         <form id="search-form" class="pc-search" autocomplete="off" role="search">
           <input id="search-input" class="wz-field" type="search" inputmode="search" enterkeyhint="search" maxlength="400"
-                 aria-label="Search podcasts or paste a feed address" placeholder="Search podcasts or paste a feed URL">
+                 aria-label="Search podcasts, or paste a feed address or YouTube channel" placeholder="Search, or paste a feed or YouTube channel">
           <button id="search-go" class="wz-field-go" type="submit" aria-label="Search">
             <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6"/><path d="M16 16l4 4"/></svg>
           </button>
         </form>
-        <p id="search-note" class="pc-note">Searches the free Apple Podcasts directory. Episodes always come from each show's public feed.</p>
+        <p id="search-note" class="pc-note">Searches the free Apple Podcasts directory and YouTube channels. Podcast episodes come from each show's public feed; YouTube episodes are audio only, through the YouTube Music app.</p>
         <ul class="wz-list" id="search-results" aria-label="Search results"></ul>
         <div class="wz-sec pc-tools">
           <ul class="wz-list">
@@ -76,6 +76,7 @@
           <div class="pc-hero-text">
             <h2 id="show-title" class="pc-title"></h2>
             <p id="show-meta" class="pc-sub"></p>
+            <span id="show-yt" class="pc-yt" hidden title="A YouTube channel. Episodes are audio only, through the YouTube Music app.">YouTube</span>
           </div>
         </div>
         <div class="wz-actions pc-actions">

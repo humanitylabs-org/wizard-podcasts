@@ -7,8 +7,10 @@ Data lives under DATA_DIR (app data, never the owner's media folder):
 """
 from __future__ import annotations
 
+import html
 import json
 import os
+import struct
 import shutil
 import sqlite3
 import threading
@@ -18,6 +20,7 @@ from urllib.parse import quote, urlsplit
 
 import feeds
 import netfetch
+import youtube
 from netfetch import FetchError
 
 DATA = Path(os.environ.get('DATA_DIR', Path(__file__).resolve().parent.parent / '.data'))
@@ -188,7 +191,8 @@ def show_dict(r, counts=None):
          'feed_url': r['feed_url'], 'link': r['link'], 'auto_download': bool(r['auto_download']),
          'artwork': f'api/shows/{r["id"]}/art' if r['art_file'] else '', 'added_at': r['added_at'],
          'last_checked': r['last_checked'], 'last_error': r['last_error'] or None,
-         'pending': r['last_checked'] == 0 and not r['last_error']}
+         'pending': r['last_checked'] == 0 and not r['last_error'],
+         'source': 'youtube' if youtube.is_feed(r['feed_url']) else 'rss'}
     if counts is not None:
         d.update(counts)
     return d
@@ -221,6 +225,21 @@ EP_SELECT = ('SELECT e.*, s.title AS show_title, s.art_file AS art_file FROM epi
 
 # ------------------------------------------------------------------ directory search
 
+def _youtube_result(c, subscribed):
+    cid = c['channel_id']
+    return {'title': c['title'], 'author': c.get('handle') or 'YouTube', 'feed_url': youtube.channel_url(cid),
+            'artwork': c.get('artwork') or '', 'genre': 'YouTube channel', 'subscribers': c.get('subscribers') or None,
+            'source': 'youtube', 'channel_id': cid,
+            'subscribed': youtube.feed_url(cid) in subscribed or youtube.channel_feed_url(cid) in subscribed}
+
+
+def _search_youtube(term, out):
+    try:
+        out.extend(youtube.search_channels(term, 6))
+    except Exception:  # YouTube search is a bonus; Apple results never depend on it
+        pass
+
+
 def search_directory(term, limit=20):
     term = (term or '').strip() if isinstance(term, str) else ''
     if not term:
@@ -228,17 +247,34 @@ def search_directory(term, limit=20):
     if len(term) > 200:
         raise Problem(400, 'That search is too long.')
     limit = max(1, min(int(limit or 20), 50))
+    subscribed = {r['feed_url'] for r in q('SELECT feed_url FROM shows')}
+    if youtube.parse_ref(term) is not None:  # a channel URL or @handle: look that one channel up
+        try:
+            info = youtube.resolve(term)
+        except FetchError as e:
+            raise Problem(422, str(e)) from None
+        c = {'channel_id': info['channel_id'], 'title': info['title'], 'artwork': info['image'],
+             'handle': term if term.startswith('@') else ''}
+        return {'query': term, 'results': [], 'youtube': [_youtube_result(c, subscribed)], 'source': 'YouTube'}
     if urlsplit(term).scheme in ('http', 'https'):
-        return {'query': term, 'results': [], 'is_url': True}
+        return {'query': term, 'results': [], 'youtube': [], 'is_url': True}
+    yt = []
+    worker = threading.Thread(target=_search_youtube, args=(term, yt), daemon=True)
+    worker.start()
     url = f'{SEARCH_URL}?media=podcast&entity=podcast&limit={limit}&term={quote(term)}'
+    problem = None
+    data = {}
     try:
         _status, body, _r = netfetch.get_bytes(url, 2 * MB, 'search')
         data = json.loads(body)
     except FetchError as e:
-        raise Problem(502, f'Podcast search is unavailable right now ({e}).') from None
+        problem = Problem(502, f'Podcast search is unavailable right now ({e}).')
     except ValueError:
-        raise Problem(502, 'Podcast search returned an unreadable answer.') from None
-    subscribed = {r['feed_url'] for r in q('SELECT feed_url FROM shows')}
+        problem = Problem(502, 'Podcast search returned an unreadable answer.')
+    worker.join(20)
+    youtube_results = [_youtube_result(c, subscribed) for c in list(yt)]
+    if problem and not youtube_results:
+        raise problem
     results = []
     for item in data.get('results', []):
         feed = item.get('feedUrl')
@@ -249,8 +285,9 @@ def search_directory(term, limit=20):
                         'author': str(item.get('artistName') or '')[:300], 'feed_url': feed,
                         'artwork': art if isinstance(art, str) and art.startswith('https://') else '',
                         'genre': str(item.get('primaryGenreName') or '')[:80], 'episodes': item.get('trackCount'),
-                        'itunes_id': item.get('collectionId'), 'subscribed': feed in subscribed})
-    return {'query': term, 'results': results, 'source': 'Apple Podcasts directory (iTunes Search API)'}
+                        'itunes_id': item.get('collectionId'), 'subscribed': feed in subscribed, 'source': 'rss'})
+    return {'query': term, 'results': results, 'youtube': youtube_results,
+            'source': 'Apple Podcasts directory (iTunes Search API); YouTube channel search'}
 
 
 # ------------------------------------------------------------------ subscribe / refresh
@@ -261,7 +298,10 @@ def _fetch_feed(url, etag='', last_modified=''):
         headers['If-None-Match'] = etag
     if last_modified:
         headers['If-Modified-Since'] = last_modified
-    r = netfetch.open_url(url, headers=headers, timeout=25)
+    if youtube.is_feed(url):
+        r = netfetch.open_url(url, headers=headers, timeout=25, allow=youtube.host_allowed)
+    else:
+        r = netfetch.open_url(url, headers=headers, timeout=25)
     try:
         if r.status == 304:
             return None, r
@@ -286,20 +326,66 @@ def _fetch_feed(url, etag='', last_modified=''):
         r.close()
 
 
-def subscribe(url, auto_download=None):
+def _existing(*urls):
+    for u in urls:
+        row = q('SELECT * FROM shows WHERE feed_url=?', (u,), one=True)
+        if row:
+            return {'already_subscribed': True, 'show': show_dict(row, _counts(row['id']))}
+    return None
+
+
+def _subscribe_youtube(text):
+    """A YouTube channel reference -> (feed url, parsed feed, response), or an 'already' answer."""
     try:
-        url = netfetch.check_url(url)
+        info = youtube.resolve(text)
     except FetchError as e:
-        raise Problem(400, str(e)) from None
-    existing = q('SELECT * FROM shows WHERE feed_url=?', (url,), one=True)
-    if existing:
-        return {'already_subscribed': True, 'show': show_dict(existing, _counts(existing['id']))}
+        raise Problem(422, str(e)) from None
+    cid = info['channel_id']
+    long_form, every = youtube.feed_url(cid), youtube.channel_feed_url(cid)
+    already = _existing(long_form, every)
+    if already:
+        return already, None, None, None
+    url = long_form
     try:
         parsed, r = _fetch_feed(url)
     except FetchError as e:
-        raise Problem(422, str(e)) from None
+        if '404' not in str(e):
+            raise Problem(422, str(e)) from None
+        url = every  # no long-form uploads list: the channel feed, with Shorts skipped by the parser
+        try:
+            parsed, r = _fetch_feed(url)
+        except (FetchError, feeds.FeedError) as e2:
+            raise Problem(422, str(e2)) from None
     except feeds.FeedError as e:
         raise Problem(422, str(e)) from None
+    if parsed is not None:
+        parsed['title'] = info['title'] or parsed['title']
+        parsed['author'] = parsed['author'] or info['title']
+        parsed['image'] = info['image'] or parsed['image']
+        parsed['link'] = info['url']
+        parsed['description'] = parsed['description'] or feeds.sanitize_html(html.escape(info['description']))[:20000]
+    return None, url, parsed, r
+
+
+def subscribe(url, auto_download=None):
+    if isinstance(url, str) and youtube.parse_ref(url) is not None:
+        already, url, parsed, r = _subscribe_youtube(url)
+        if already:
+            return already
+    else:
+        try:
+            url = netfetch.check_url(url)
+        except FetchError as e:
+            raise Problem(400, str(e)) from None
+        already = _existing(url)
+        if already:
+            return already
+        try:
+            parsed, r = _fetch_feed(url)
+        except FetchError as e:
+            raise Problem(422, str(e)) from None
+        except feeds.FeedError as e:
+            raise Problem(422, str(e)) from None
     if parsed is None:
         raise Problem(422, 'The feed answered "not modified" to a first request.')
     if auto_download is None:
@@ -318,8 +404,12 @@ def subscribe(url, auto_download=None):
 
 
 def _apply_feed(c, sid, parsed, r, first):
-    c.execute('UPDATE shows SET title=?, author=?, description=?, image_url=?, link=?, last_checked=?, last_error=?, etag=?, last_modified=? WHERE id=?',
-              (parsed['title'], parsed['author'], parsed['description'], parsed['image'], parsed['link'], now(), '',
+    # A feed that omits artwork/description/link (YouTube uploads feeds do) keeps what the show already has.
+    c.execute("UPDATE shows SET title=?, author=?, description=CASE WHEN ?<>'' THEN ? ELSE description END, "
+              "image_url=CASE WHEN ?<>'' THEN ? ELSE image_url END, link=CASE WHEN ?<>'' THEN ? ELSE link END, "
+              'last_checked=?, last_error=?, etag=?, last_modified=? WHERE id=?',
+              (parsed['title'], parsed['author'], parsed['description'], parsed['description'], parsed['image'], parsed['image'],
+               parsed['link'], parsed['link'], now(), '',
                (r.header('ETag') or '')[:300], (r.header('Last-Modified') or '')[:100], sid))
     auto = c.execute('SELECT auto_download FROM shows WHERE id=?', (sid,)).fetchone()['auto_download']
     eps = sorted(parsed['episodes'], key=lambda e: e['published'], reverse=True)
@@ -358,7 +448,7 @@ def refresh_show(sid):
         write(lambda c: c.execute("UPDATE shows SET last_checked=?, last_error='' WHERE id=?", (now(), sid)))
         return {'show_id': sid, 'ok': True, 'new_episodes': 0, 'not_modified': True}
     new = write(lambda c: _apply_feed(c, sid, parsed, r, first))
-    if not row['art_file'] or row['image_url'] != parsed['image']:
+    if not row['art_file'] or (parsed['image'] and row['image_url'] != parsed['image']):
         threading.Thread(target=_cache_art, args=(sid,), daemon=True).start()
     if new:
         wake_download.set()
@@ -381,11 +471,14 @@ def refresh_all(force=False):
 
 
 def _cache_art(sid):
-    row = q('SELECT image_url FROM shows WHERE id=?', (sid,), one=True)
+    row = q('SELECT image_url, feed_url FROM shows WHERE id=?', (sid,), one=True)
     if not row or not row['image_url']:
         return
     try:
-        r = netfetch.open_url(row['image_url'], timeout=20)
+        if youtube.is_feed(row['feed_url']):
+            r = netfetch.open_url(row['image_url'], timeout=20, allow=youtube.host_allowed)
+        else:
+            r = netfetch.open_url(row['image_url'], timeout=20)
         try:
             ctype = (r.header('Content-Type') or '').split(';')[0].strip().lower()
             if r.status != 200 or ctype not in ('image/jpeg', 'image/png', 'image/webp', 'image/gif'):
@@ -617,6 +710,48 @@ def _pick_ext(ctype, url, mime):
     return m.group(1).lower() if m else 'mp3'
 
 
+def mp4_duration(path) -> int:
+    """Seconds from an MP4/M4A file's mvhd box (YouTube feeds carry no duration). 0 if unknown."""
+    try:
+        with open(path, 'rb') as f:
+            size_total = os.fstat(f.fileno()).st_size
+
+            def boxes(start, end):
+                pos = start
+                while pos + 8 <= end:
+                    f.seek(pos)
+                    hdr = f.read(8)
+                    if len(hdr) < 8:
+                        return
+                    size, kind = struct.unpack('>I4s', hdr)
+                    head = 8
+                    if size == 1:
+                        size = struct.unpack('>Q', f.read(8))[0]
+                        head = 16
+                    elif size == 0:
+                        size = end - pos
+                    if size < head:
+                        return
+                    yield kind, pos + head, pos + size
+                    pos += size
+            for kind, a, b in boxes(0, size_total):
+                if kind != b'moov':
+                    continue
+                for k2, a2, _b2 in boxes(a, b):
+                    if k2 == b'mvhd':
+                        f.seek(a2)
+                        ver = f.read(1)[0]
+                        f.read(3)
+                        if ver == 1:
+                            _c, _m, scale, dur = struct.unpack('>QQIQ', f.read(28))
+                        else:
+                            _c, _m, scale, dur = struct.unpack('>IIII', f.read(16))
+                        return int(dur / scale) if scale else 0
+    except (OSError, struct.error, IndexError):
+        return 0
+    return 0
+
+
 def _fail(eid, msg):
     write(lambda c: c.execute("UPDATE episodes SET download='failed', download_error=?, progress=0 WHERE id=?", (msg[:300], eid)))
 
@@ -625,8 +760,9 @@ def _download(r):
     eid = r['id']
     write(lambda c: c.execute("UPDATE episodes SET download='downloading', progress=0, download_error='' WHERE id=?", (eid,)))
     tmp = None
+    vid = youtube.video_id(r['enclosure_url'])
     try:
-        resp = netfetch.open_url(r['enclosure_url'], timeout=30)
+        resp = youtube.open_audio(vid) if vid else netfetch.open_url(r['enclosure_url'], timeout=30)
     except FetchError as e:
         return _fail(eid, str(e))
     _state['downloading'] = eid
@@ -674,9 +810,12 @@ def _download(r):
         tmp = None
         rel = _rel(final)
 
+        secs = r['duration'] or (mp4_duration(final) if ext in ('m4a', 'mp4', 'm4b', 'm4v') else 0)
+
         def done(c):
-            cur = c.execute("UPDATE episodes SET download='done', file=?, file_size=?, progress=?, downloaded_at=?, mime=CASE WHEN mime='' THEN ? ELSE mime END "
-                            "WHERE id=? AND download='downloading'", (rel, total, total, now(), MIME.get(ext, ''), eid))
+            cur = c.execute("UPDATE episodes SET download='done', file=?, file_size=?, progress=?, downloaded_at=?, mime=CASE WHEN mime='' THEN ? ELSE mime END, "
+                            "duration=CASE WHEN duration=0 THEN ? ELSE duration END "
+                            "WHERE id=? AND download='downloading'", (rel, total, total, now(), MIME.get(ext, ''), secs, eid))
             return cur.rowcount
         if not write(done):
             final.unlink(missing_ok=True)
@@ -724,6 +863,18 @@ def start_workers():
 
 # ------------------------------------------------------------------ status
 
+_yt_status = {'at': 0, 'value': None}
+
+
+def youtube_status():
+    """Whether YouTube shows can download: the music-source connector's own status (cached 30 s)."""
+    n = sum(1 for r in q('SELECT feed_url FROM shows') if youtube.is_feed(r['feed_url']))
+    if time.time() - _yt_status['at'] > 30 or _yt_status['value'] is None:
+        _yt_status['value'] = youtube.source_status()
+        _yt_status['at'] = time.time()
+    return {'shows': n, **_yt_status['value']}
+
+
 def status():
     s = get_settings()
     r = q("SELECT COUNT(*) n, SUM(download='done') d, SUM(download IN ('queued','downloading')) qd, SUM(download='failed') f, "
@@ -735,5 +886,5 @@ def status():
             'download_queue': r['qd'] or 0, 'download_failures': r['f'] or 0, 'downloading_episode': _state['downloading'],
             'storage_used_mb': round(used / MB, 1), 'storage_cap_mb': s['storage_cap_mb'],
             'refresh_minutes': s['refresh_minutes'], 'last_refresh': _state['last_refresh'], 'refreshing': _state['refreshing'],
-            'now_playing': now_playing(), 'settings': s,
+            'now_playing': now_playing(), 'settings': s, 'youtube': youtube_status(),
             'data_dir_note': 'Episode files are under the app data folder; podcasts_episode returns each file path relative to it.'}

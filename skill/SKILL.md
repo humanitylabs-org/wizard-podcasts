@@ -1,7 +1,7 @@
 ---
 name: wizard-podcasts
 description: Use when the owner asks about podcasts - following a show, new episodes, what he was listening to, or episode notes.
-version: 0.1.0
+version: 0.2.0
 author: Humanity Labs
 license: GPL-3.0-only
 platforms: [linux, macos]
@@ -16,6 +16,7 @@ The owner's private podcast player (app id `wizard-podcasts`). Use its MCP tools
 
 - `podcasts_status` first: shows, new episodes, download queue/failures, storage used vs cap, what is playing and where.
 - Follow a show: `podcasts_search` with its name, pick the matching result (title + author), then `podcasts_subscribe` with that result's `feed_url`. A pasted RSS/Atom address goes straight to `podcasts_subscribe`. Idempotent. Only public feed enclosures are used.
+- YouTube-only shows: `podcasts_subscribe` also takes a YouTube channel URL (`https://www.youtube.com/@handle`) or `@handle`; `podcasts_search` returns matching channels under `youtube` (pick by name + handle + subscribers; prefer the creator's own channel over clips/fan channels). Episodes are long-form uploads, audio only, through the YouTube Music app; if `podcasts_status.youtube.installed` is false, tell the owner to get YouTube Music. Show rows have `source: "youtube"`.
 - `podcasts_list` with `view: "inbox"` is Up next (`continue` = started, `new` = unplayed new). No arguments lists shows; `show_id` lists that show's episodes newest first.
 - `podcasts_episode` returns show notes (`notes_text`), saved `position` in seconds, `duration`, `download.state`, and `file` (path relative to the Podcasts app data folder once downloaded). `transcript` is `not_available` in v1; `feed_transcript_url` is the publisher's own transcript link when the feed has one.
 - `podcasts_mark` with `played: true|false` (optional `in_inbox`). Read the returned episode to confirm.

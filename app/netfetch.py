@@ -122,10 +122,14 @@ class Response:
             self.conn.close()
 
 
-def open_url(url: str, headers: dict | None = None, timeout: float = 20, method: str = 'GET') -> Response:
+def open_url(url: str, headers: dict | None = None, timeout: float = 20, method: str = 'GET', allow=None) -> Response:
+    """`allow(host) -> bool`, when given, must accept the host of every hop (YouTube fetches
+    stay on YouTube's own hosts); the public-address check still applies on top."""
     seen = set()
     for _ in range(MAX_REDIRECTS + 1):
         url = check_url(url)
+        if allow is not None and not allow(urlsplit(url).hostname or ''):
+            raise FetchError(f'{urlsplit(url).hostname} is not a YouTube address, so Podcasts does not fetch it for a YouTube show.')
         if (method, url) in seen:
             raise FetchError('That address redirects in a loop.')
         seen.add((method, url))
@@ -156,8 +160,8 @@ def open_url(url: str, headers: dict | None = None, timeout: float = 20, method:
     raise FetchError('That address redirects too many times.')
 
 
-def get_bytes(url: str, cap: int, what='response', headers=None, timeout=25):
-    r = open_url(url, headers=headers, timeout=timeout)
+def get_bytes(url: str, cap: int, what='response', headers=None, timeout=25, allow=None):
+    r = open_url(url, headers=headers, timeout=timeout, allow=allow) if allow else open_url(url, headers=headers, timeout=timeout)
     try:
         if r.status == 304:
             return r.status, b'', r

@@ -11,6 +11,8 @@ services:
     environment:
       PORT: '9207'
       DATA_DIR: /data
+      # YouTube shows get audio from the music-source connector on its app link (declared in wizard.md uses).
+      PODCASTS_YOUTUBE_SOURCES: wizard-youtube-music=http://wizard-youtube-music:9206
       WIZARD_TRUSTED_HOSTS: ${WIZARD_TRUSTED_HOSTS:-}
       WIZARD_TRUSTED_ORIGINS: ${WIZARD_TRUSTED_ORIGINS:-}
     volumes:
