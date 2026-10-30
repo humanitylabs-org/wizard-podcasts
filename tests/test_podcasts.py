@@ -810,3 +810,81 @@ def test_inbox_sort_and_since():
         assert mcp({'view': 'inbox', 'sort': 'sideways'})['isError'] is True
     finally:
         P.write(lambda c: [c.execute('DELETE FROM episodes WHERE show_id=?', (i,)) or c.execute('DELETE FROM shows WHERE id=?', (i,)) for i in (a, b)])
+
+
+# ------------------------------------------------------------------ the 0.3 feed
+
+def test_feed_states_show_filter_sort_paging_and_chips():
+    now = int(time.time())
+    t0 = now + 3 * 10 ** 7  # newer than anything else in the shared test database
+
+    def seed(c):
+        a = c.execute('INSERT INTO shows (feed_url, title, added_at, last_checked) VALUES (?,?,?,?)',
+                      ('https://feeds.example.com/feed-a.xml', 'The Feed Show', now, now)).lastrowid
+        b = c.execute('INSERT INTO shows (feed_url, title, added_at, last_checked) VALUES (?,?,?,?)',
+                      ('https://feeds.example.com/feed-b.xml', 'Quiet Podcast', now, now)).lastrowid
+        # guid, published, inbox, position, played
+        rows = [(a, 'n1', t0 + 10, 1, 0, 0), (a, 'n2', t0 + 30, 1, 0, 0), (a, 'st', t0 + 20, 0, 75, 0),  # st: started, not in inbox
+                (a, 'old', t0 + 1, 0, 0, 0),                                                          # back catalogue only
+                (a, 'pl', t0 + 25, 0, 0, 1), (b, 'b1', t0 + 5, 1, 0, 0)]
+        for sid, guid, pub, ib, pos, played in rows:
+            c.execute('INSERT INTO episodes (show_id, guid, title, published, enclosure_url, first_seen, inbox, position, position_at, played) '
+                      'VALUES (?,?,?,?,?,?,?,?,?,?)', (sid, guid, guid, pub, 'https://cdn.example.com/' + guid + '.mp3', now, ib, pos, now if pos else 0, played))
+        return a, b
+    a, b = P.write(seed)
+    try:
+        def get(qs=''):
+            r, body = req('GET', '/api/feed' + qs)
+            return r.status, json.loads(body)
+
+        def titles(d):
+            return [e['title'] for e in d['episodes']]
+
+        # default: unplayed = new + started in one list, newest first; played and back catalogue hidden
+        st, d = get(f'?show_id={a}')
+        assert st == 200 and titles(d) == ['n2', 'st', 'n1'] and d['total'] == 3
+        assert d['filter'] == {'show_id': a, 'state': 'unplayed', 'sort': 'newest'}
+        st, d = get(f'?show_id={a}&sort=oldest')
+        assert titles(d) == ['n1', 'st', 'n2']
+        assert titles(get(f'?show_id={a}&state=started')[1]) == ['st']
+        assert titles(get(f'?show_id={a}&state=played')[1]) == ['pl']
+        # paging
+        st, d = get(f'?show_id={a}&limit=2&offset=2')
+        assert titles(d) == ['n1'] and d['total'] == 3 and d['offset'] == 2
+        # all shows: both shows' episodes; chips list every followed show newest episode first, with short names
+        st, d = get()
+        assert {'n2', 'st', 'n1', 'b1'} <= set(titles(d)) and titles(d)[:3] == ['n2', 'st', 'n1']
+        ids = [s['id'] for s in d['shows']]
+        assert ids.index(a) < ids.index(b) and ids[0] == a
+        fa = d['shows'][0]
+        assert fa['short_title'] == 'Feed' and fa['unplayed'] == 3 and fa['auto_download'] is True and 'feed_url' in fa
+        # through the gateway prefix too
+        r, body = req('GET', f'/wizard-podcasts/api/feed?show_id={b}')
+        assert r.status == 200 and titles(json.loads(body)) == ['b1']
+        for qs in ('?state=done', '?sort=up', '?show_id=x', '?limit=x'):
+            st, d = get(qs)
+            assert st == 400 and d['error'], qs
+        # the 0.2 Up next endpoint still answers the same way for agents
+        st, d = req('GET', f'/api/inbox?show_id={a}')[0].status, json.loads(req('GET', f'/api/inbox?show_id={a}')[1])
+        assert st == 200 and [e['title'] for e in d['continue']] == ['st'] and [e['title'] for e in d['new']] == ['n2', 'n1']
+    finally:
+        P.write(lambda c: [c.execute('DELETE FROM episodes WHERE show_id=?', (i,)) or c.execute('DELETE FROM shows WHERE id=?', (i,)) for i in (a, b)])
+
+
+def test_view_smoke_minimal_screen():
+    """View-level smoke check without a browser: every element the script reaches exists in the page, the 0.2
+    tabs and Up next sections are gone, and the screen keeps one sheet."""
+    import re
+    html = (ROOT / 'web/index.html').read_text()
+    js = (ROOT / 'web/app.js').read_text()
+    ids = set(re.findall(r'\bid="([^"]+)"', html))
+    used = set(re.findall(r"\$\('([^']+)'\)", js))
+    assert used and used <= ids, sorted(used - ids)
+    for gone in ('pc-tabs', 'Up next', 'view-inbox', 'view-shows', 'Continue listening', 'data-tab'):
+        assert gone not in html and gone not in js, gone
+    assert html.count('class="wz-sheet"') == 1
+    assert 'api/feed' in js and 'WizardApp' in js and 'WzSheet.open' in js
+    for view in ('feed', 'add', 'show', 'episode', 'player'):
+        assert f'id="view-{view}"' in html
+    r, body = req('GET', '/')
+    assert r.status == 200 and b'id="chips"' in body and b'pc-tabs' not in body

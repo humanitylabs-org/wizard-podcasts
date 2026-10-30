@@ -16,71 +16,30 @@
 </head>
 <body>
   <div class="wz-app pc-app">
-    <header class="wz-head"><h1>Podcasts</h1><p id="head-note"></p></header>
+    <div class="pc-top" id="top">
+      <div id="chips" class="pc-chips" role="group" aria-label="Shows"></div>
+      <button type="button" class="pc-tool" id="open-filter" aria-label="Filter and order"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M7 12h10M10 17h4"/></svg><i class="pc-dot" id="filter-dot" hidden></i></button>
+      <button type="button" class="pc-tool" id="open-add" aria-label="Find shows"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg></button>
+    </div>
     <main class="wz-scroll" id="main">
 
-      <section id="view-inbox" class="pc-view" data-tab="inbox" aria-label="Up next">
-        <div id="inbox-filters" class="pc-filters" hidden>
-          <div id="chips-shows" class="pc-chips" role="group" aria-label="Show"></div>
-          <div id="chips-more" class="pc-chips-more" hidden>
-            <div id="seg-state" class="pc-seg" role="group" aria-label="Progress">
-              <button type="button" class="pc-seg-b" data-state="unplayed" aria-pressed="false">Unplayed</button>
-              <button type="button" class="pc-seg-b" data-state="started" aria-pressed="false">Started</button>
-            </div>
-            <button type="button" id="sort-toggle" class="pc-sort" aria-label="Order: newest first. Tap for oldest first">
-              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14M4.5 15.5 8 19l3.5-3.5M16 19V5M12.5 8.5 16 5l3.5 3.5"/></svg><span id="sort-label">Newest first</span>
-            </button>
-          </div>
-        </div>
-        <div id="inbox-continue" class="pc-group" hidden>
-          <h2 class="pc-day-h">Continue listening <span id="continue-count" class="pc-day-n"></span></h2>
-          <ul class="wz-list" id="list-continue"></ul>
-        </div>
-        <div id="inbox-groups" aria-label="New episodes by date"></div>
-        <div id="inbox-none" class="wz-empty pc-none" hidden>
-          <strong>Nothing here with this filter</strong>
-          <button type="button" class="wz-button secondary pc-gap" id="filter-clear">Show all</button>
-        </div>
-        <div id="inbox-empty" class="wz-empty" hidden>
-          <div class="wz-tile" aria-hidden="true">♪</div>
-          <strong>You're all caught up</strong>
-          <p>New episodes from your shows land here and download on their own.</p>
-          <button type="button" class="wz-button pc-gap" data-go="add">Find a podcast</button>
+      <section id="view-feed" class="pc-view" aria-label="Episodes">
+        <div id="feed-groups"></div>
+        <button type="button" class="wz-button secondary pc-more" id="feed-more" hidden>More</button>
+        <div id="feed-empty" class="wz-empty pc-none" hidden>
+          <p id="feed-empty-text"></p>
+          <button type="button" class="wz-button secondary pc-gap" id="feed-empty-go" hidden></button>
         </div>
       </section>
 
-      <section id="view-shows" class="pc-view" data-tab="shows" aria-label="Shows" hidden>
-        <div id="shows-grid" class="pc-shows"></div>
-        <div id="shows-empty" class="wz-empty" hidden>
-          <div class="wz-tile" aria-hidden="true">＋</div>
-          <strong>No shows yet</strong>
-          <p>Search the podcast directory or paste a feed address.</p>
-          <button type="button" class="wz-button pc-gap" data-go="add">Find a podcast</button>
-        </div>
-        <div class="wz-sec pc-tools">
-          <ul class="wz-list">
-            <li><button type="button" class="wz-row" id="refresh-all"><span class="wz-tile" aria-hidden="true">↻</span><span class="wz-main"><b>Check for new episodes</b><small id="refresh-note">Checks every hour on its own</small></span></button></li>
-            <li><button type="button" class="wz-row" id="open-settings"><span class="wz-tile" aria-hidden="true">⚙</span><span class="wz-main"><b>Settings</b><small id="storage-note">Storage and downloads</small></span></button></li>
-          </ul>
-        </div>
-      </section>
-
-      <section id="view-add" class="pc-view" data-tab="add" aria-label="Add a podcast" hidden>
+      <section id="view-add" class="pc-view" aria-label="Find shows" hidden>
         <form id="search-form" class="pc-search" autocomplete="off" role="search">
           <input id="search-input" class="wz-field" type="search" inputmode="search" enterkeyhint="search" maxlength="400"
-                 aria-label="Search podcasts, or paste a feed address or YouTube channel" placeholder="Search, or paste a feed or YouTube channel">
-          <button id="search-go" class="wz-field-go" type="submit" aria-label="Search">
-            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6"/><path d="M16 16l4 4"/></svg>
-          </button>
+                 aria-label="Search shows, or paste a feed address or @handle" placeholder="Search, or paste a feed or @handle">
+          <button type="button" class="pc-tool" id="open-settings" aria-label="Settings"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></button>
         </form>
-        <p id="search-note" class="pc-note">Searches the free Apple Podcasts directory and YouTube channels. Podcast episodes come from each show's public feed; YouTube episodes are audio only, through the YouTube Music app.</p>
-        <ul class="wz-list" id="search-results" aria-label="Search results"></ul>
-        <div class="wz-sec pc-tools">
-          <ul class="wz-list">
-            <li><label class="wz-row pc-file"><span class="wz-tile" aria-hidden="true">⇪</span><span class="wz-main"><b>Import from another app</b><small>Choose an OPML file</small></span><input id="opml-file" type="file" accept=".opml,.xml,text/xml,text/x-opml,application/xml" class="wz-sr"></label></li>
-            <li><a class="wz-row" id="opml-export" href="api/opml" download="podcasts.opml"><span class="wz-tile" aria-hidden="true">⇩</span><span class="wz-main"><b>Export your shows</b><small>OPML file for any podcast app</small></span></a></li>
-          </ul>
-        </div>
+        <p id="search-note" class="pc-note" hidden></p>
+        <ul class="wz-list" id="search-results" aria-label="Results"></ul>
       </section>
 
       <section id="view-show" class="pc-view" aria-label="Show" hidden>
@@ -89,18 +48,12 @@
           <div class="pc-hero-text">
             <h2 id="show-title" class="pc-title"></h2>
             <p id="show-meta" class="pc-sub"></p>
-            <span id="show-yt" class="pc-yt" hidden title="A YouTube channel. Episodes are audio only, through the YouTube Music app.">YouTube</span>
           </div>
-        </div>
-        <div class="wz-actions pc-actions">
-          <button type="button" class="wz-button secondary pc-toggle" id="show-auto" aria-pressed="true">Auto-download</button>
-          <button type="button" class="wz-button secondary" id="show-refresh">Check now</button>
-          <button type="button" class="wz-button secondary" id="show-unsub">Unfollow</button>
+          <button type="button" class="pc-tool pc-hero-more" id="show-actions" aria-label="Show options"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="5.5" cy="12" r="1.3" class="pc-fill"/><circle cx="12" cy="12" r="1.3" class="pc-fill"/><circle cx="18.5" cy="12" r="1.3" class="pc-fill"/></svg></button>
         </div>
         <p id="show-error" class="pc-note pc-warn" hidden></p>
-        <details class="wz-more" id="show-about" hidden><summary>About this show</summary><div id="show-desc" class="pc-notes wz-prose"></div></details>
         <ul class="wz-list" id="show-episodes" aria-label="Episodes"></ul>
-        <button type="button" class="wz-button secondary pc-more" id="show-more" hidden>Show older episodes</button>
+        <button type="button" class="wz-button secondary pc-more" id="show-more" hidden>More</button>
       </section>
 
       <section id="view-episode" class="pc-view" aria-label="Episode" hidden>
@@ -114,8 +67,8 @@
         </div>
         <button type="button" class="wz-button pc-play-big" id="ep-play"></button>
         <div class="wz-actions pc-actions">
-          <button type="button" class="wz-button secondary" id="ep-download"></button>
           <button type="button" class="wz-button secondary" id="ep-mark"></button>
+          <button type="button" class="wz-button secondary" id="ep-download"></button>
         </div>
         <p id="ep-dl-note" class="pc-note" hidden></p>
         <div id="ep-notes" class="pc-notes wz-prose"></div>
@@ -124,7 +77,7 @@
       <section id="view-player" class="pc-view pc-player" aria-label="Now playing" hidden>
         <img id="pl-art" class="pc-art pc-art-xl" alt="" hidden>
         <div class="pc-player-text">
-          <h2 id="pl-title" class="pc-title"></h2>
+          <button type="button" id="pl-title" class="pc-title pc-title-btn"></button>
           <button type="button" id="pl-show" class="pc-link"></button>
           <p id="pl-date" class="pc-sub"></p>
         </div>
@@ -138,16 +91,13 @@
           <button type="button" class="pc-round" id="pl-fwd" aria-label="Forward 30 seconds"><span>+30</span></button>
         </div>
         <div class="pc-speeds" role="group" aria-label="Playback speed" id="pl-speeds"></div>
-        <div class="wz-actions pc-actions pc-center">
-          <button type="button" class="wz-button secondary" id="pl-notes">Episode notes</button>
-          <button type="button" class="wz-button secondary" id="pl-mark">Mark played</button>
-        </div>
+        <button type="button" class="wz-button secondary pc-mark" id="pl-mark">Mark played</button>
       </section>
     </main>
 
     <p id="status" class="wz-status" role="status" aria-live="polite"></p>
 
-    <footer class="pc-dock">
+    <footer class="pc-dock" id="dock">
       <div id="toast" class="pc-toast" role="status" aria-live="polite" hidden><span id="toast-text"></span><button type="button" id="toast-undo" class="pc-toast-btn">Undo</button></div>
       <div id="mini" class="pc-mini" hidden>
         <div class="pc-mini-bar"><i id="mini-progress"></i></div>
@@ -156,44 +106,14 @@
           <span class="pc-mini-text"><b id="mini-title"></b><small id="mini-sub"></small></span>
         </button>
         <button type="button" class="pc-icon" id="mini-toggle" aria-label="Play"></button>
-        <button type="button" class="pc-icon" id="mini-fwd" aria-label="Forward 30 seconds"><span class="pc-skip">+30</span></button>
       </div>
-      <nav class="pc-tabs" aria-label="Podcasts sections">
-        <button type="button" class="pc-tab" data-tab="inbox" aria-current="page"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h10M4 18h7"/><path d="M17 15l4 3-4 3z"/></svg><span>Up next</span><i id="tab-badge" class="pc-badge" hidden></i></button>
-        <button type="button" class="pc-tab" data-tab="shows"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="7" height="7" rx="1.5"/><rect x="13" y="4" width="7" height="7" rx="1.5"/><rect x="4" y="13" width="7" height="7" rx="1.5"/><rect x="13" y="13" width="7" height="7" rx="1.5"/></svg><span>Shows</span></button>
-        <button type="button" class="pc-tab" data-tab="add"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg><span>Add</span></button>
-      </nav>
     </footer>
 
     <audio id="audio" preload="metadata"></audio>
 
-    <dialog class="wz-sheet" id="settings-sheet" aria-labelledby="settings-h">
-      <h2 id="settings-h">Settings</h2>
-      <form id="settings-form" class="pc-form">
-        <label class="pc-field"><span>Storage for downloads</span>
-          <select id="set-cap" class="wz-field">
-            <option value="512">0.5 GB</option><option value="1024">1 GB</option><option value="2048">2 GB</option>
-            <option value="5120">5 GB</option><option value="10240">10 GB</option><option value="20480">20 GB</option>
-          </select></label>
-        <p class="pc-note" id="set-used"></p>
-        <label class="pc-field"><span>Check feeds</span>
-          <select id="set-refresh" class="wz-field">
-            <option value="30">Every 30 minutes</option><option value="60">Every hour</option><option value="180">Every 3 hours</option>
-            <option value="720">Twice a day</option><option value="1440">Once a day</option>
-          </select></label>
-        <label class="pc-check"><input type="checkbox" id="set-auto"><span>Auto-download new episodes of new shows</span></label>
-        <p class="pc-note">When storage is full, played episodes are removed first, then the oldest unstarted ones.</p>
-        <button type="submit" class="wz-button pc-wide">Save</button>
-      </form>
-    </dialog>
-
-    <dialog class="wz-sheet" id="unsub-sheet" aria-labelledby="unsub-h">
-      <h2 id="unsub-h">Unfollow this show?</h2>
-      <p class="pc-note" id="unsub-text"></p>
-      <div class="wz-actions">
-        <button type="button" class="wz-button" id="unsub-yes">Unfollow</button>
-        <button type="button" class="wz-button secondary" id="unsub-no">Keep</button>
-      </div>
+    <dialog class="wz-sheet" id="sheet" aria-labelledby="sheet-h">
+      <h2 id="sheet-h"></h2>
+      <div id="sheet-body"></div>
     </dialog>
   </div>
 </body>

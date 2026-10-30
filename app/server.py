@@ -19,7 +19,7 @@ from podcasts import Problem  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 APP_ID = 'wizard-podcasts'
-VERSION = '0.2.3'
+VERSION = '0.3.0'
 PORT = int(os.environ.get('PORT', '9207'))
 PREFIX = '/' + APP_ID
 STATIC_TYPES = {'.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8',
@@ -40,7 +40,7 @@ TRUSTED_HOSTS = _csv('WIZARD_TRUSTED_HOSTS') | _LOCAL
 TRUSTED_NAMES = {h for h in TRUSTED_HOSTS if ':' not in h}
 TRUSTED_ORIGINS = _csv('WIZARD_TRUSTED_ORIGINS') | {'http://' + h for h in _LOCAL}
 FRAME_ANCESTORS = ' '.join(["'self'"] + sorted(o for o in TRUSTED_ORIGINS if o.startswith('https://')))
-CSP = ("default-src 'self'; img-src 'self' data: https://*.mzstatic.com; media-src 'self'; connect-src 'self'; "
+CSP = ("default-src 'self'; img-src 'self' data: https://*.mzstatic.com https://*.ggpht.com https://*.googleusercontent.com; media-src 'self'; connect-src 'self'; "
        f"style-src 'self'; script-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors {FRAME_ANCESTORS}")
 
 
@@ -218,6 +218,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send(200, P.search_directory(qs.get('q', ''), int(qs.get('limit', '20') or 20)))
             if path == '/api/shows':
                 return self.send(200, P.list_shows())
+            if path == '/api/feed':
+                qs = self.query()
+                return self.send(200, P.feed(qs.get('show_id'), qs.get('state'), qs.get('sort'), _qint(qs.get('limit'), 100), _qint(qs.get('offset'), 0)))
             if path == '/api/inbox':
                 qs = self.query()
                 return self.send(200, P.inbox(_qint(qs.get('limit'), 100), qs.get('show_id'), qs.get('kind'), qs.get('state'), qs.get('sort'), qs.get('since')))
