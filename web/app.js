@@ -63,10 +63,49 @@ function day(ts) {
   const opts = d.getFullYear() === now.getFullYear() ? { month: 'short', day: 'numeric' } : { month: 'short', day: 'numeric', year: 'numeric' };
   return d.toLocaleDateString(undefined, opts);
 }
+// Dates are always the viewer's local time (the browser's time zone and language).
+function startOfDay(d) { const x = new Date(d); x.setHours(0, 0, 0, 0); return x; }
+function daysBetween(later, earlier) { return Math.round((startOfDay(later) - startOfDay(earlier)) / 86400000); }
+const WEEK_START = (() => {  // 0 = Sunday … 6 = Saturday, from the viewer's locale; Monday when unknown
+  try { const l = new Intl.Locale(navigator.language); const w = l.getWeekInfo ? l.getWeekInfo() : l.weekInfo; if (w && w.firstDay) return w.firstDay % 7; } catch (_) {}
+  return 1;
+})();
+function startOfWeek(now) { const s = startOfDay(now); s.setDate(s.getDate() - (s.getDay() - WEEK_START + 7) % 7); return s; }
+function timeOfDay(d) { return d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' }); }
+// Up next section for a publish time: Today, Yesterday, this week's weekdays, Last week, then months.
+function dateGroup(ts, now = new Date()) {
+  if (!ts) return { key: 'undated', label: 'Date unknown' };
+  const d = new Date(ts * 1000), diff = daysBetween(now, d);
+  if (diff <= 0) return { key: 'today', label: 'Today' };
+  if (diff === 1) return { key: 'yesterday', label: 'Yesterday' };
+  const week = startOfWeek(now);
+  if (d >= week) return { key: 'day-' + d.toDateString(), label: d.toLocaleDateString(undefined, { weekday: 'long' }) + ', ' + d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) };
+  const lastWeek = new Date(week); lastWeek.setDate(lastWeek.getDate() - 7);
+  if (d >= lastWeek) return { key: 'last-week', label: 'Last week' };
+  const opts = d.getFullYear() === now.getFullYear() ? { month: 'long' } : { month: 'long', year: 'numeric' };
+  return { key: 'month-' + d.getFullYear() + '-' + d.getMonth(), label: d.toLocaleDateString(undefined, opts) };
+}
+// When an episode was posted, for a row: '12 min ago', '3h ago', 'Yesterday 9:14 PM', 'Wed 9:14 PM', 'Oct 21'.
+function posted(ts, now = new Date()) {
+  if (!ts) return '';
+  const d = new Date(ts * 1000), diff = daysBetween(now, d), secs = (now - d) / 1000;
+  if (diff <= 0) {
+    if (secs < 60) return 'Just now';
+    if (secs < 3600) return Math.floor(secs / 60) + ' min ago';
+    return Math.floor(secs / 3600) + 'h ago';
+  }
+  if (diff === 1) return 'Yesterday ' + timeOfDay(d);
+  if (diff < 7) return d.toLocaleDateString(undefined, { weekday: 'short' }) + ' ' + timeOfDay(d);
+  return day(ts);
+}
+// Full date and time for the episode page and the player: 'Wednesday, October 28, 2026 at 9:14 PM'.
+function postedFull(ts) {
+  if (!ts) return '';
+  return new Date(ts * 1000).toLocaleString(undefined, { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' });
+}
 function episodeMeta(ep) {
   const bits = [];
   if (ep.show_title && state.stack.at(-1)?.view !== 'show') bits.push(ep.show_title);
-  if (ep.published) bits.push(day(ep.published));
   if (ep.played) bits.push('Played');
   else if (ep.position > 0 && ep.duration) bits.push(minutes(ep.duration - ep.position) + ' left');
   else if (ep.duration) bits.push(minutes(ep.duration));
@@ -181,7 +220,17 @@ function episodeRow(ep, { onDone } = {}) {
   const img = el('img', 'pc-art pc-art-row'); img.alt = ''; img.loading = 'lazy';
   art(img, ep.artwork);
   const main = el('span', 'wz-main');
-  main.append(el('b', 'pc-clamp', ep.title), el('small', '', episodeMeta(ep)));
+  const meta = el('small', 'pc-meta');
+  const when = posted(ep.published);
+  if (when) {
+    const w = el('time', 'pc-when', when);
+    w.dateTime = new Date(ep.published * 1000).toISOString();
+    w.title = postedFull(ep.published);
+    meta.append(w);
+  }
+  const rest = episodeMeta(ep);
+  if (rest) meta.append((when ? ' · ' : '') + rest);
+  main.append(el('b', 'pc-clamp', ep.title), meta);
   if (ep.position > 0 && ep.duration && !ep.played) {
     const bar = el('span', 'pc-progress'); const fill = el('i');
     fill.style.width = Math.min(100, 100 * ep.position / ep.duration) + '%';
@@ -223,24 +272,27 @@ function pollIfBusy(list) {
     pollTimer = setTimeout(() => { if (!document.hidden) load(currentView(), state.stack.at(-1)?.id); }, 4000);
   }
 }
-// Up next filter: one show, one kind (podcast | youtube) and/or one progress state (unplayed | started).
-// Remembered on this device only; the server filters (GET api/inbox?show_id=&kind=&state=).
+// Up next filter: one show and/or one progress state (unplayed | started), plus the order (newest | oldest first).
+// Remembered on this device only; the server filters and sorts (GET api/inbox?show_id=&state=&sort=).
+// Podcasts and YouTube shows are one list: a type filter saved by 0.2.1 is dropped so nobody stays filtered by it.
 const FILTER_KEY = 'wizard-podcasts.upnext-filter';
 const filter = (() => {
   try {
     const f = JSON.parse(localStorage.getItem(FILTER_KEY) || '{}');
-    return { show: Number.isInteger(f.show) ? f.show : null, kind: ['podcast', 'youtube'].includes(f.kind) ? f.kind : null,
-      state: ['unplayed', 'started'].includes(f.state) ? f.state : null };
-  } catch (_) { return { show: null, kind: null, state: null }; }
+    return { show: Number.isInteger(f.show) ? f.show : null, state: ['unplayed', 'started'].includes(f.state) ? f.state : null,
+      sort: f.sort === 'oldest' ? 'oldest' : 'newest', stale: 'kind' in f };
+  } catch (_) { return { show: null, state: null, sort: 'newest', stale: true }; }
 })();
 function saveFilter() {
-  try { localStorage.setItem(FILTER_KEY, JSON.stringify(filter)); } catch (_) {}
+  try { localStorage.setItem(FILTER_KEY, JSON.stringify({ show: filter.show, state: filter.state, sort: filter.sort })); } catch (_) {}
 }
+if (filter.stale) saveFilter();
+delete filter.stale;
 function inboxPath() {
   const qs = new URLSearchParams();
   if (filter.show != null) qs.set('show_id', filter.show);
-  if (filter.kind) qs.set('kind', filter.kind);
   if (filter.state) qs.set('state', filter.state);
+  if (filter.sort === 'oldest') qs.set('sort', 'oldest');
   const t = qs.toString();
   return 'api/inbox' + (t ? '?' + t : '');
 }
@@ -249,9 +301,9 @@ function setFilter(change) {
   saveFilter();
   load('inbox');
 }
-function filtering() { return filter.show != null || !!filter.kind || !!filter.state; }
+function filtering() { return filter.show != null || !!filter.state; }
 
-let chipSig = '', chipKind = null;
+let chipSig = '';
 function chip(label, opts) {
   const b = el('button', 'pc-chip' + (opts.all ? ' pc-chip-all' : ''));
   b.type = 'button';
@@ -270,39 +322,40 @@ function chip(label, opts) {
 }
 function renderFilters(f) {
   const box = $('inbox-filters');
-  const shows = (f.shows || []).filter(s => !filter.kind || s.kind === filter.kind);
-  const bothKinds = f.kinds && f.kinds.podcast > 0 && f.kinds.youtube > 0;
+  const shows = f.shows || [];
   const bothStates = f.started > 0 && f.unplayed > 0;
-  box.hidden = !f.total || ((f.shows || []).length < 2 && !bothKinds && !bothStates && !filtering());
+  const canSort = f.unplayed > 1 && filter.state !== 'started';
+  box.hidden = !f.total || (shows.length < 2 && !bothStates && !canSort && !filtering() && filter.sort === 'newest');
   if (box.hidden) return;
   // Rebuild the chip row only when its content changes, so polling during downloads keeps its scroll place.
   const sig = JSON.stringify([shows.map(s => [s.id, s.unplayed, s.short_title, s.artwork]), filter.show]);
   const row = $('chips-shows');
   if (sig !== chipSig) {
-    const sameSet = chipKind === filter.kind;
-    chipSig = sig; chipKind = filter.kind;
-    const left = sameSet ? row.scrollLeft : 0;
+    chipSig = sig;
+    const left = row.scrollLeft;
     row.replaceChildren(
-      chip('All', { all: true, onclick: () => setFilter({ show: null, kind: null, state: null }) }),
+      chip('All', { all: true, onclick: () => setFilter({ show: null, state: null }) }),
       ...shows.map(s => chip(s.short_title || s.title, { show: s, onclick: () => setFilter({ show: filter.show === s.id ? null : s.id }) })));
     row.scrollLeft = left;
   }
   for (const b of row.children) b.setAttribute('aria-pressed', String(b.dataset.all ? !filtering() : +b.dataset.show === filter.show));
-  $('seg-kind').hidden = !bothKinds && !filter.kind;
   $('seg-state').hidden = !bothStates && !filter.state;
-  $('chips-more').hidden = $('seg-kind').hidden && $('seg-state').hidden;
-  for (const b of $('seg-kind').children) b.setAttribute('aria-pressed', String(b.dataset.kind === filter.kind));
+  $('sort-toggle').hidden = !canSort && filter.sort === 'newest';
+  $('chips-more').hidden = $('seg-state').hidden && $('sort-toggle').hidden;
+  const oldest = filter.sort === 'oldest';
+  $('sort-label').textContent = oldest ? 'Oldest first' : 'Newest first';
+  $('sort-toggle').setAttribute('aria-label', oldest ? 'Order: oldest first. Tap for newest first' : 'Order: newest first. Tap for oldest first');
+  $('sort-toggle').dataset.sort = filter.sort;
   for (const b of $('seg-state').children) b.setAttribute('aria-pressed', String(b.dataset.state === filter.state));
 }
-for (const b of document.querySelectorAll('#seg-kind .pc-seg-b')) {
-  b.onclick = () => {
-    const kind = filter.kind === b.dataset.kind ? null : b.dataset.kind;
-    const shown = (lastFilters?.shows || []).find(s => s.id === filter.show);
-    setFilter({ kind, show: kind && shown && shown.kind !== kind ? null : filter.show });
-  };
-}
 for (const b of document.querySelectorAll('#seg-state .pc-seg-b')) b.onclick = () => setFilter({ state: filter.state === b.dataset.state ? null : b.dataset.state });
-$('filter-clear').onclick = () => setFilter({ show: null, kind: null, state: null });
+$('sort-toggle').onclick = async () => {
+  Object.assign(filter, { sort: filter.sort === 'oldest' ? 'newest' : 'oldest' });
+  saveFilter();
+  await load('inbox');
+  $('main').scrollTop = 0;
+};
+$('filter-clear').onclick = () => setFilter({ show: null, state: null });
 // A mouse wheel scrolls the chip row sideways on desktop.
 $('chips-shows').addEventListener('wheel', e => {
   const row = $('chips-shows');
@@ -314,8 +367,37 @@ function revealChosenChip() {
 }
 
 let lastFilters = null, inboxReload = 0;
+// New episodes in date sections with sticky headers (Today, Yesterday, weekdays, Last week, months), in the
+// server's order, so Oldest first simply runs the sections the other way.
+function renderGroups(list, onDone) {
+  const now = new Date(), groups = [];
+  for (const e of list) {
+    const g = dateGroup(e.published, now);
+    if (groups.at(-1)?.key !== g.key) groups.push({ ...g, eps: [] });
+    groups.at(-1).eps.push(e);
+  }
+  $('inbox-groups').replaceChildren(...groups.map(g => {
+    const sec = el('section', 'pc-group');
+    sec.dataset.group = g.key;
+    const h = el('h2', 'pc-day-h', g.label);
+    h.append(el('span', 'pc-day-n', String(g.eps.length)));
+    const ul = el('ul', 'wz-list');
+    ul.append(...g.eps.map(e => episodeRow(e, { onDone })));
+    sec.append(h, ul);
+    return sec;
+  }));
+}
+function recount() {
+  for (const sec of $('inbox-groups').querySelectorAll('.pc-group')) {
+    const n = sec.querySelector('ul').children.length;
+    if (!n) sec.remove(); else sec.querySelector('.pc-day-n').textContent = String(n);
+  }
+  const c = $('list-continue').children.length;
+  $('continue-count').textContent = String(c);
+  $('inbox-continue').hidden = !c;
+}
 function renderInbox(data) {
-  const f = data.filters || { shows: [], kinds: {}, started: 0, unplayed: 0, total: (data.continue || []).length + (data.new || []).length };
+  const f = data.filters || { shows: [], started: 0, unplayed: 0, total: (data.continue || []).length + (data.new || []).length };
   lastFilters = f;
   // A remembered show that has nothing left in Up next falls back to All.
   if (filter.show != null && !(f.shows || []).some(s => s.id === filter.show)) { filter.show = null; saveFilter(); return load('inbox'); }
@@ -324,24 +406,20 @@ function renderInbox(data) {
   if (firstPaint) revealChosenChip();
   const cont = data.continue || [], fresh = data.new || [];
   const emptyCheck = () => {
-    const any = !!($('list-continue').children.length || $('list-new').children.length);
+    const any = !!($('list-continue').children.length || $('inbox-groups').querySelector('.pc-ep'));
     $('inbox-empty').hidden = any || filtering() && f.total > 0;
     $('inbox-none').hidden = any || !filtering() || !f.total;
   };
   const onDone = () => {
-    $('new-count').textContent = $('list-new').children.length;
-    $('inbox-new').hidden = !$('list-new').children.length;
-    $('inbox-continue').hidden = !$('list-continue').children.length;
+    recount();
     emptyCheck();
     // counts on the chips and the tab badge come from the server
     clearTimeout(inboxReload);
     inboxReload = setTimeout(() => { if (currentView() === 'inbox') load('inbox'); }, 600);
   };
   $('list-continue').replaceChildren(...cont.map(e => episodeRow(e, { onDone })));
-  $('list-new').replaceChildren(...fresh.map(e => episodeRow(e, { onDone })));
-  $('inbox-continue').hidden = !cont.length;
-  $('inbox-new').hidden = !fresh.length;
-  $('new-count').textContent = fresh.length;
+  renderGroups(fresh, onDone);
+  recount();
   badge(data.filters ? f.unplayed : fresh.length);
   emptyCheck();
   if (data.now_playing && !state.current) loadIntoPlayer(data.now_playing, false);
@@ -350,12 +428,6 @@ function renderInbox(data) {
 function badge(n) { $('tab-badge').hidden = !n; $('tab-badge').textContent = n > 99 ? '99+' : String(n); }
 
 // ------------------------------------------------------------------ shows
-function ytLabel() {
-  const t = el('span', 'pc-yt', 'YouTube');
-  t.title = 'A YouTube channel. Episodes are audio only, through the YouTube Music app.';
-  return t;
-}
-
 function renderShows(data) {
   const grid = $('shows-grid');
   grid.replaceChildren();
@@ -367,7 +439,6 @@ function renderShows(data) {
     if (!s.artwork) { const ph = el('span', 'pc-art pc-art-tile pc-art-ph', (s.title || '?').slice(0, 1)); ph.setAttribute('aria-hidden', 'true'); b.append(ph); }
     else b.append(img);
     b.append(el('b', 'pc-clamp', s.title));
-    if (s.source === 'youtube') b.append(ytLabel());
     b.append(el('small', '', s.pending ? 'Loading…' : s.last_error ? 'Feed problem' : s.new ? s.new + ' new' : s.episodes + ' episodes'));
     b.onclick = () => openView('show', s.id);
     grid.append(b);
@@ -443,7 +514,7 @@ function renderEpisode(ep) {
   $('ep-show').textContent = ep.show_title || '';
   $('ep-show').onclick = () => openView('show', ep.show_id);
   $('ep-title').textContent = ep.title;
-  $('ep-meta').textContent = [day(ep.published), ep.duration ? minutes(ep.duration) : '', ep.played ? 'Played' : ''].filter(Boolean).join(' · ');
+  $('ep-meta').textContent = [postedFull(ep.published), ep.duration ? minutes(ep.duration) : '', ep.played ? 'Played' : ''].filter(Boolean).join(' · ');
   const isCurrent = state.current?.id === ep.id;
   const playLabel = isCurrent && !audio.paused ? 'Pause' : ep.position > 0 && !ep.played ? 'Resume from ' + clock(ep.position) : 'Play';
   $('ep-play').replaceChildren(icon(isCurrent && !audio.paused ? 'pause' : 'play'), el('span', '', playLabel));
@@ -518,7 +589,6 @@ function resultRow(item) {
   art(img, item.artwork);
   const text = el('span', 'wz-main');
   text.append(el('b', 'pc-clamp', item.title), el('small', '', [item.author, item.source === 'youtube' ? item.subscribers : item.genre].filter(Boolean).join(' · ')));
-  if (item.source === 'youtube') text.append(ytLabel());
   main.append(img, text);
   const btn = el('button', item.subscribed ? 'wz-button secondary pc-follow' : 'wz-button pc-follow', item.subscribed ? 'Following' : 'Follow');
   btn.type = 'button';
@@ -668,6 +738,7 @@ function paintPlayer() {
     art($('pl-art'), ep.artwork);
     $('pl-title').textContent = ep.title;
     $('pl-show').textContent = ep.show_title || '';
+    $('pl-date').textContent = [postedFull(ep.published), ep.duration ? minutes(ep.duration) : ''].filter(Boolean).join(' · ');
     $('pl-toggle').replaceChildren(icon(playing ? 'pause' : 'play'));
     $('pl-toggle').setAttribute('aria-label', playing ? 'Pause' : 'Play');
     const seek = $('pl-seek');
@@ -795,7 +866,7 @@ for (const b of document.querySelectorAll('[data-go]')) b.onclick = () => setTab
 if (!W) {
   say('Wizard system functions are unavailable. Open Podcasts through Wizard.', 'error');
 } else {
-  W.ready({ name: 'wizard-podcasts', version: '0.2.1' });
+  W.ready({ name: 'wizard-podcasts', version: '0.2.2' });
   // Domain Back: close the nested view (player, episode, show); at a tab root, the core decides.
   W.back.register({ canGoBack: () => state.stack.length > 0, back: () => popView() });
 }
