@@ -175,7 +175,7 @@ html.wz-hosted .pc-dock { background: color-mix(in srgb, var(--wz-base) 55%, tra
 .pc-yt[hidden] { display: none; }
 .pc-result-h { list-style: none; padding: 14px 4px 4px; font-size: 13px; font-weight: 650; color: var(--ink-3); }
 
-/* Up next filters: one scrolling row of show chips (All first), then optional type / progress toggles.
+/* Up next filters: one scrolling row of show chips (All first), then the progress toggle and the order button.
  * Every chip is a 44px target; the chosen one takes the accent. Kit colours only. */
 .pc-filters { display: grid; gap: 6px; padding: 6px 0 4px; }
 .pc-filters[hidden], .pc-chips-more[hidden], .pc-seg[hidden] { display: none; }
@@ -200,9 +200,31 @@ html.wz-hosted .pc-dock { background: color-mix(in srgb, var(--wz-base) 55%, tra
 .pc-seg-b[aria-pressed="true"] { background: color-mix(in srgb, var(--accent) 22%, transparent); color: var(--ink); box-shadow: inset 0 0 0 1px var(--accent); }
 @media (hover: hover) { .pc-seg-b:hover { color: var(--ink); } }
 .pc-none { padding-top: 28px; }
-/* phone widths: the two toggles share one line instead of stacking */
+.pc-chips-more { align-items: center; }
+.pc-sort { display: inline-flex; align-items: center; gap: 6px; min-height: 44px; margin-left: auto; padding: 0 14px 0 10px; border-radius: var(--r-pill);
+  background: var(--fill); border: 1px solid var(--line); color: var(--ink-2); font-size: var(--wz-text-md, .875rem); font-weight: 650; white-space: nowrap; }
+.pc-sort[hidden] { display: none; }
+.pc-sort svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.pc-sort[data-sort="oldest"] { color: var(--ink); box-shadow: inset 0 0 0 1px var(--accent); }
+.pc-sort:active { transform: scale(.97); }
+@media (hover: hover) { .pc-sort:hover { color: var(--ink); } }
+/* phone widths: the progress toggle and the order button share one line instead of stacking */
 @container wz-app (max-width: 599px) {
   .pc-chips-more { flex-wrap: nowrap; }
   .pc-seg { flex: 1 1 auto; }
   .pc-seg-b { flex: 1 1 auto; padding: 0 6px; font-size: var(--wz-text-sm, .8125rem); white-space: nowrap; }
+  .pc-sort { flex: none; padding: 0 12px 0 8px; font-size: var(--wz-text-sm, .8125rem); }
 }
+
+/* Up next date sections: sentence-case sticky headers in the viewer's local time, each with its count.
+ * The header spans the gutter and carries a frosted strip so rows never show through while it sticks. */
+.pc-group { position: relative; }
+.pc-group + .pc-group, #inbox-continue + #inbox-groups .pc-group:first-child { margin-top: 6px; }
+.pc-day-h { position: sticky; top: -4px; z-index: 2; display: flex; align-items: center; gap: 8px; margin: 0 calc(-1 * var(--wz-gutter, 10px));
+  padding: 12px calc(var(--wz-gutter, 10px) + 8px) 8px; font-size: var(--wz-text-md, .875rem); font-weight: 750; line-height: 1.3; letter-spacing: 0; text-transform: none; color: var(--ink);
+  background: color-mix(in srgb, var(--canvas) 94%, transparent); border-bottom: 1px solid var(--line); backdrop-filter: blur(18px); -webkit-backdrop-filter: blur(18px); }
+html.wz-hosted .pc-day-h { background: color-mix(in srgb, var(--wz-base) 82%, transparent); }
+.pc-day-n { min-width: 22px; padding: 0 7px; border-radius: var(--r-pill); background: var(--fill-2); color: var(--ink-2); font-size: .75rem; line-height: 20px; font-weight: 750; text-align: center; font-variant-numeric: tabular-nums; }
+.pc-group > .wz-list { padding-top: 2px; }
+/* when an episode was posted leads its meta line, a step stronger than the rest */
+.pc-meta .pc-when { color: var(--ink-2); font-weight: 650; }

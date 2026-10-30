@@ -589,6 +589,7 @@ def show_detail(sid, limit=100, offset=0):
 
 INBOX_KINDS = ('podcast', 'youtube')
 INBOX_STATES = ('started', 'unplayed')
+INBOX_SORTS = ('newest', 'oldest')
 _SHORT_TAIL = re.compile(r'\s+(?:podcast|show|pod)\s*$', re.I)
 
 
@@ -606,9 +607,23 @@ def _show_kind(feed_url):
     return 'youtube' if youtube.is_feed(feed_url) else 'podcast'
 
 
-def inbox(limit=100, show_id=None, kind=None, state=None):
-    """Up next. Optional filters: show_id (one show), kind ('podcast'|'youtube'), state ('started'|'unplayed').
-    `filters` always describes the whole, unfiltered Up next so a screen can draw its chips from one call."""
+def inbox(limit=100, show_id=None, kind=None, state=None, sort=None, since=None):
+    """Up next. Optional filters: show_id (one show), kind ('podcast'|'youtube'), state ('started'|'unplayed'),
+    since (unix seconds: only episodes published at or after it). sort ('newest' default | 'oldest') orders `new` by
+    publish date; `continue` stays most recently listened first. `filters` always describes the whole, unfiltered
+    Up next so a screen can draw its chips from one call."""
+    if sort not in (None, '') and sort not in INBOX_SORTS:
+        raise Problem(400, "sort must be 'newest' or 'oldest'.")
+    sort = sort or 'newest'
+    if since not in (None, ''):
+        try:
+            since = int(float(since))
+        except (TypeError, ValueError):
+            raise Problem(400, 'since must be a unix time in seconds.') from None
+        if since < 0:
+            raise Problem(400, 'since must be a unix time in seconds.')
+    else:
+        since = None
     if kind == 'rss':
         kind = 'podcast'
     if kind not in (None, '') and kind not in INBOX_KINDS:
@@ -657,9 +672,14 @@ def inbox(limit=100, show_id=None, kind=None, state=None):
         new = []
     elif state == 'unplayed':
         cont = []
+    if since is not None:
+        cont = [r for r in cont if (r['published'] or 0) >= since]
+        new = [r for r in new if (r['published'] or 0) >= since]
+    if sort == 'oldest':
+        new = sorted(new, key=lambda r: (r['published'] or 0, r['id']))
     np = now_playing()
     return {'continue': [episode_dict(r) for r in cont], 'new': [episode_dict(r) for r in new[:limit]], 'now_playing': np,
-            'filter': {'show_id': show_id, 'kind': kind, 'state': state},
+            'filter': {'show_id': show_id, 'kind': kind, 'state': state, 'sort': sort, 'since': since},
             'filters': filters}
 
 

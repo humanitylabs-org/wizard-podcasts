@@ -696,7 +696,7 @@ def test_inbox_filters_by_show_kind_and_state():
             return sorted(e['title'] for e in d['continue'] + d['new'])
 
         st, full = get()
-        assert st == 200 and full['filter'] == {'show_id': None, 'kind': None, 'state': None}
+        assert st == 200 and full['filter'] == {'show_id': None, 'kind': None, 'state': None, 'sort': 'newest', 'since': None}
         chips = full['filters']['shows']
         ours = [c for c in chips if c['id'] in (a, b, y)]
         # newest episode first: Beta (t0+50), Gamma (t0+20), Alpha (t0+3); a0 is not in Up next so does not count
@@ -745,3 +745,65 @@ def test_inbox_filters_by_show_kind_and_state():
         assert len(mcp({'show_id': a})['structuredContent']['episodes']) == 4
     finally:
         P.write(lambda c: [c.execute('DELETE FROM episodes WHERE show_id=?', (i,)) or c.execute('DELETE FROM shows WHERE id=?', (i,)) for i in (a, b, y)])
+
+
+def test_inbox_sort_and_since():
+    now = int(time.time())
+    t0 = now + 2 * 10 ** 7  # newer than anything else in the shared test database
+
+    def seed(c):
+        a = c.execute('INSERT INTO shows (feed_url, title, added_at, last_checked) VALUES (?,?,?,?)',
+                      ('https://feeds.example.com/sort-a.xml', 'Sort Show', now, now)).lastrowid
+        b = c.execute('INSERT INTO shows (feed_url, title, added_at, last_checked) VALUES (?,?,?,?)',
+                      ('https://feeds.example.com/sort-b.xml', 'Other Show', now, now)).lastrowid
+        rows = [(a, 's1', t0 + 100, 0), (a, 's2', t0 + 300, 0), (a, 's3', t0 + 200, 0), (b, 'o1', t0 + 250, 0),
+                (a, 's4', t0 + 150, 90)]  # s4 started (Continue)
+        for sid, guid, pub, pos in rows:
+            c.execute('INSERT INTO episodes (show_id, guid, title, published, enclosure_url, first_seen, inbox, position, position_at) '
+                      'VALUES (?,?,?,?,?,?,1,?,?)', (sid, guid, guid, pub, 'https://cdn.example.com/' + guid + '.mp3', now, pos, now if pos else 0))
+        return a, b
+    a, b = P.write(seed)
+    try:
+        def get(qs):
+            r, body = req('GET', '/api/inbox' + qs)
+            return r.status, json.loads(body)
+
+        def new(d):
+            return [e['title'] for e in d['new']]
+
+        # default newest first, by publish date; every episode carries published
+        st, d = get(f'?show_id={a}')
+        assert st == 200 and new(d) == ['s2', 's3', 's1'] and d['filter']['sort'] == 'newest'
+        assert all(isinstance(e['published'], int) and e['published'] > 0 for e in d['new'] + d['continue'])
+        assert [e['title'] for e in d['continue']] == ['s4']
+        # oldest first reverses the new list; Continue is untouched
+        st, d = get(f'?show_id={a}&sort=oldest')
+        assert st == 200 and new(d) == ['s1', 's3', 's2'] and [e['title'] for e in d['continue']] == ['s4'] and d['filter']['sort'] == 'oldest'
+        # oldest + limit keeps the oldest ones
+        st, d = get(f'?show_id={a}&sort=oldest&limit=2')
+        assert new(d) == ['s1', 's3']
+        # since: published at or after it, both sections; combines with show and sort
+        st, d = get(f'?show_id={a}&since={t0 + 200}')
+        assert st == 200 and new(d) == ['s2', 's3'] and d['continue'] == [] and d['filter']['since'] == t0 + 200
+        st, d = get(f'?since={t0 + 200}&sort=oldest')
+        assert new(d)[:3] == ['s3', 'o1', 's2'] and new(d)[0] == 's3'
+        st, d = get(f'?show_id={a}&since={t0 + 150}&state=started')
+        assert [e['title'] for e in d['continue']] == ['s4'] and d['new'] == []
+        # facets stay unfiltered
+        assert get(f'?since={t0 + 10 ** 6}')[1]['filters'] == get('')[1]['filters']
+        # bad values are 400s with a message
+        for qs in ('?sort=random', '?since=yesterday', '?since=-5'):
+            st, d = get(qs)
+            assert st == 400 and d['error'], qs
+        # the same through MCP podcasts_list
+        def mcp(args):
+            r, body = req('POST', '/mcp', {'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call', 'params': {'name': 'podcasts_list', 'arguments': args}})
+            return json.loads(body)['result']
+        tools = json.loads(req('POST', '/mcp', {'jsonrpc': '2.0', 'id': 1, 'method': 'tools/list'})[1])['result']['tools']
+        props = [t for t in tools if t['name'] == 'podcasts_list'][0]['inputSchema']['properties']
+        assert props['sort']['enum'] == ['newest', 'oldest'] and props['since']['type'] == 'integer'
+        assert new(mcp({'view': 'inbox', 'show_id': a, 'sort': 'oldest'})['structuredContent']) == ['s1', 's3', 's2']
+        assert new(mcp({'view': 'inbox', 'show_id': a, 'since': t0 + 250})['structuredContent']) == ['s2']
+        assert mcp({'view': 'inbox', 'sort': 'sideways'})['isError'] is True
+    finally:
+        P.write(lambda c: [c.execute('DELETE FROM episodes WHERE show_id=?', (i,)) or c.execute('DELETE FROM shows WHERE id=?', (i,)) for i in (a, b)])
