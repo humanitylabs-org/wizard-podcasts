@@ -199,6 +199,128 @@ def test_redirects_are_rechecked(monkeypatch):
     assert calls == ['public.example']
 
 
+def _chain_conn(monkeypatch, hops, final_status=200):
+    """A fake pinned connection whose responses follow `hops`: {url: Location}."""
+    calls = []
+
+    class Conn:
+        def __init__(self, host, port, address, timeout):
+            self.host = host
+
+        def request(self, method, path, headers=None):
+            self.url = f'https://{self.host}{path}'
+            calls.append(self.url)
+
+        def getresponse(self):
+            loc = hops.get(self.url)
+
+            class R:
+                status = 302 if loc else final_status
+                headers = {}
+
+                def getheader(self, n, d=None):
+                    return loc if (n == 'Location' and loc) else d
+
+                def read(self, n=-1):
+                    return b''
+
+                def close(self):
+                    pass
+            return R()
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(netfetch, '_PinnedHTTPS', Conn)
+    monkeypatch.setattr(socket, 'getaddrinfo', lambda h, *a, **k: [(socket.AF_INET, 1, 6, '', ('10.0.0.5' if h.endswith('.internal') else '93.184.216.34', 443))])
+    return calls
+
+
+# The real Shawn Ryan Show enclosure chain (Oct 2026): 8 redirects before the audio.
+SRS = ['https://www.podtrac.com/pts/redirect.mp3/pdst.fm/e/pdrl.fm/55dc8e/x.mp3', 'https://pdst.fm/e/pdrl.fm/55dc8e/x.mp3',
+       'https://pdrl.fm/55dc8e/x.mp3', 'https://pscrb.fm/rss/p/x.mp3', 'https://mgln.ai/e/433/x.mp3',
+       'https://www.claritaspod.com/measure/x.mp3', 'https://arttrk.com/p/QCDM1/x.mp3', 'https://traffic.megaphone.fm/x.mp3',
+       'https://dcs-spotify.megaphone.fm/x.mp3?key=abc&request_event_id=1']
+
+
+def test_long_tracking_redirect_chain_is_followed(monkeypatch):
+    calls = _chain_conn(monkeypatch, dict(zip(SRS, SRS[1:])))
+    r = ORIG_OPEN(SRS[0])
+    assert r.status == 200 and r.url == SRS[-1] and calls == SRS
+
+
+def test_relative_location_is_resolved_against_the_hop(monkeypatch):
+    calls = _chain_conn(monkeypatch, {'https://a.example/e/1.mp3': '/cdn/1.mp3?sig=x',
+                                      'https://a.example/cdn/1.mp3?sig=x': '//b.example/1.mp3'})
+    r = ORIG_OPEN('https://a.example/e/1.mp3')
+    assert r.url == 'https://b.example/1.mp3' and len(calls) == 3
+
+
+def test_redirect_limit_and_loop(monkeypatch):
+    many = [f'https://h{i}.example/a.mp3' for i in range(netfetch.MAX_REDIRECTS + 2)]
+    _chain_conn(monkeypatch, dict(zip(many, many[1:])))
+    with pytest.raises(netfetch.FetchError, match='too many times'):
+        ORIG_OPEN(many[0])
+    _chain_conn(monkeypatch, {'https://l.example/a': 'https://m.example/b', 'https://m.example/b': 'https://l.example/a'})
+    with pytest.raises(netfetch.FetchError, match='loop'):
+        ORIG_OPEN('https://l.example/a')
+
+
+def test_private_hop_deep_in_a_chain_is_refused(monkeypatch):
+    hops = dict(zip(SRS[:5], SRS[1:5] + ['https://metadata.internal/latest']))
+    calls = _chain_conn(monkeypatch, hops)
+    with pytest.raises(netfetch.FetchError, match='private or local'):
+        ORIG_OPEN(SRS[0])
+    assert 'https://metadata.internal/latest' not in calls
+
+
+def _big_feed(n, notes_kb):
+    head = (b'<?xml version="1.0" encoding="UTF-8"?><rss version="2.0" xmlns:content="http://purl.org/rss/1.0/modules/content/">'
+            b'<channel><title>Big Show</title><description>long running</description>')
+    body = b'<p>' + b'notes ' * (notes_kb * 1024 // 6) + b'</p>'
+    items = b''.join(b'<item><title>Ep %d</title><guid>big-%d</guid><pubDate>Mon, 19 Oct 2026 10:00:00 GMT</pubDate>'
+                     b'<enclosure url="https://cdn.example.com/big%d.mp3" type="audio/mpeg" length="1"/>'
+                     b'<content:encoded><![CDATA[' % (i, i, i) + body + b']]></content:encoded></item>' for i in range(n))
+    return head + items + b'</channel></rss>'
+
+
+def test_streaming_parser_drops_items_and_matches_whole_parse():
+    data = _big_feed(50, 4)
+    p = feeds.FeedParser('https://x.example/feed')
+    for i in range(0, len(data), 1000):  # tiny chunks: tags split across chunk boundaries
+        p.feed(data[i:i + 1000])
+    show = p.close()
+    assert len(show['episodes']) == 50 and show['title'] == 'Big Show'
+    assert p.root.find('channel').findall('item') == []  # items are not retained in the tree
+    assert show == feeds.parse_feed(data, 'https://x.example/feed')
+    q = feeds.FeedParser()
+    with pytest.raises(feeds.FeedError):  # entity declaration split across chunks is still refused
+        q.feed(b'<?xml version="1.0"?><rss><channel><title>t</title><!EN')
+        q.feed(b'TITY x "y"></channel></rss>')
+    tail = feeds.FeedParser()
+    with pytest.raises(feeds.FeedError, match='DTD'):
+        tail.feed(b'<?xml version="1.0"?><rss><channel><title>' + b'x' * 5000 + b'</title><description><![CDATA[a <!ENT')
+        tail.feed(b'ITY a "b"> ]]></description>')
+
+
+def test_feed_larger_than_15_mb_subscribes_and_cap_still_applies(monkeypatch):
+    data = _big_feed(400, 45)  # ~18 MB, like a long-running interview show
+    assert len(data) > 15 * 1024 * 1024
+    FEEDS['https://feeds.example.com/big.xml'] = data
+    r, body = req('POST', '/api/subscribe', {'url': 'https://feeds.example.com/big.xml', 'auto_download': False},
+                  {'Origin': f'http://127.0.0.1:{PORT}'})
+    assert r.status == 200, body
+    assert json.loads(body)['show']['title'] == 'Big Show'
+    assert P.MAX_FEED_BYTES >= 64 * 1024 * 1024
+    monkeypatch.setattr(P, 'MAX_FEED_BYTES', 1024 * 1024)
+    FEEDS['https://feeds.example.com/big2.xml'] = data
+    r, body = req('POST', '/api/subscribe', {'url': 'https://feeds.example.com/big2.xml'}, {'Origin': f'http://127.0.0.1:{PORT}'})
+    assert r.status == 422 and b'larger than 1 MB' in body
+    sid = json.loads(req('GET', '/api/shows')[1])
+    sid = [x for x in (sid['shows'] if isinstance(sid, dict) else sid) if x['title'] == 'Big Show'][0]['id']
+    assert req('POST', f'/api/shows/{sid}/unsubscribe', {}, {'Origin': f'http://127.0.0.1:{PORT}'})[0].status == 200
+
+
 def test_parse_rss_and_sanitize():
     show = feeds.parse_feed(RSS)
     assert show['title'] == 'Test Show' and show['author'] == 'Ann' and show['image'] == 'https://example.com/art.jpg'

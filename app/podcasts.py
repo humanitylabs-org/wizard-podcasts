@@ -25,7 +25,9 @@ DB_PATH = DATA / 'podcasts.sqlite3'
 EPISODES_DIR = DATA / 'episodes'
 ART_DIR = DATA / 'art'
 MB = 1024 * 1024
-MAX_FEED_BYTES = 15 * MB
+# Long-running shows (e.g. 800+ episodes with full show notes) publish 30+ MB feeds.
+# Feeds are parsed as a stream (feeds.FeedParser), so this caps transfer, not memory.
+MAX_FEED_BYTES = int(os.environ.get('PODCASTS_MAX_FEED_MB', '64')) * MB
 MAX_ART_BYTES = 5 * MB
 MAX_OPML_BYTES = 2 * MB
 MAX_EPISODE_BYTES = int(os.environ.get('PODCASTS_MAX_EPISODE_MB', '1024')) * MB
@@ -259,10 +261,29 @@ def _fetch_feed(url, etag='', last_modified=''):
         headers['If-None-Match'] = etag
     if last_modified:
         headers['If-Modified-Since'] = last_modified
-    status, body, r = netfetch.get_bytes(url, MAX_FEED_BYTES, 'feed', headers=headers)
-    if status == 304:
-        return None, r
-    return feeds.parse_feed(body, r.url), r
+    r = netfetch.open_url(url, headers=headers, timeout=25)
+    try:
+        if r.status == 304:
+            return None, r
+        if r.status >= 400:
+            raise FetchError(f'The server answered {r.status} for that feed.')
+        too_big = f'The feed is larger than {MAX_FEED_BYTES // MB} MB.'
+        length = r.header('Content-Length')
+        if length and length.isdigit() and int(length) > MAX_FEED_BYTES:
+            raise FetchError(too_big)
+        parser = feeds.FeedParser(r.url)
+        total = 0
+        while True:
+            chunk = r.read(256 * 1024)
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > MAX_FEED_BYTES:
+                raise FetchError(too_big)
+            parser.feed(chunk)
+        return parser.close(), r
+    finally:
+        r.close()
 
 
 def subscribe(url, auto_download=None):

@@ -100,16 +100,95 @@ def _is_media(url, mime):
     return mime.startswith(MEDIA_TYPES) or bool(MEDIA_EXT.search(urlsplit(url).path + '?'))
 
 
+class FeedParser:
+    """Incremental, memory-bounded RSS/Atom parser.
+
+    Feed it the response body chunk by chunk; each <item>/<entry> is turned into an
+    episode dict as soon as it closes and is then dropped from the tree, so memory
+    stays proportional to one episode (plus the parsed results), not to the whole
+    feed. Long-running shows publish 30+ MB feeds; building a full tree for those
+    would need several hundred MB.
+    DTDs/entity declarations are refused before the bytes reach expat."""
+
+    HEAD = 4096
+
+    def __init__(self, base_url: str = ''):
+        self.base = base_url
+        self._p = ET.XMLPullParser(events=('start', 'end'))
+        self._head = b''
+        self._tail = b''
+        self._stack = []
+        self.root = None
+        self._rss, self._atom = [], []
+        self._seen_rss = self._seen_atom = 0
+
+    def feed(self, chunk: bytes):
+        if not chunk:
+            return
+        if len(self._head) < self.HEAD:
+            self._head += chunk[:self.HEAD - len(self._head)]
+            if b'<!doctype' in self._head.lower():
+                raise FeedError('That feed uses an XML feature Podcasts does not accept (DTD/entities).')
+        if b'<!entity' in (self._tail + chunk).lower():
+            raise FeedError('That feed uses an XML feature Podcasts does not accept (DTD/entities).')
+        self._tail = chunk[-16:]
+        try:
+            self._p.feed(chunk)
+            self._drain()  # XMLPullParser queues parse errors and raises them from read_events()
+        except ET.ParseError:
+            raise FeedError('That address did not return a valid RSS or Atom feed.') from None
+
+    def _drain(self):
+        for event, el in self._p.read_events():
+            if event == 'start':
+                if self.root is None:
+                    self.root = el
+                self._stack.append(el)
+                continue
+            self._stack.pop()
+            parent = self._stack[-1] if self._stack else None
+            if parent is None:
+                continue
+            if el.tag == 'item' and parent.tag == 'channel':
+                if self._seen_rss < MAX_EPISODES:
+                    ep = _rss_item(el, self.base)
+                    if ep:
+                        self._rss.append(ep)
+                self._seen_rss += 1
+                parent.remove(el)
+            elif el.tag == ATOM + 'entry' and parent is self.root and parent.tag == ATOM + 'feed':
+                if self._seen_atom < MAX_EPISODES:
+                    ep = _atom_entry(el, self.base)
+                    if ep:
+                        self._atom.append(ep)
+                self._seen_atom += 1
+                parent.remove(el)
+
+    def close(self) -> dict:
+        try:
+            self._p.close()
+            self._drain()
+        except ET.ParseError:
+            raise FeedError('That address did not return a valid RSS or Atom feed.') from None
+        root = self.root
+        if root is None:
+            raise FeedError('That address did not return a valid RSS or Atom feed.')
+        if root.tag == 'rss' or root.find('channel') is not None:
+            return _parse_rss(root, self.base, self._rss)
+        if root.tag == ATOM + 'feed':
+            return _parse_atom(root, self.base, self._atom)
+        raise FeedError('That address did not return an RSS or Atom podcast feed.')
+
+
 def parse_feed(data: bytes, base_url: str = '') -> dict:
-    root = parse_xml(data)
-    if root.tag == 'rss' or root.find('channel') is not None:
-        return _parse_rss(root, base_url)
-    if root.tag == ATOM + 'feed':
-        return _parse_atom(root, base_url)
-    raise FeedError('That address did not return an RSS or Atom podcast feed.')
+    p = FeedParser(base_url)
+    step = 1 << 20
+    for i in range(0, len(data), step):
+        p.feed(data[i:i + step])
+    return p.close()
 
 
-def _parse_rss(root, base):
+def _parse_rss(root, base, episodes):
     ch = root.find('channel')
     if ch is None:
         raise FeedError('That RSS feed has no channel.')
@@ -119,89 +198,92 @@ def _parse_rss(root, base):
         image = _http_url(it_img.get('href'), base)
     if not image:
         image = _http_url(_text(ch, 'image/url'), base)
-    show = {
+    return {
         'title': _clean_line(_text(ch, 'title'), 300) or 'Untitled podcast',
         'author': _clean_line(_text(ch, ITUNES + 'author') or _text(ch, 'managingEditor'), 300),
         'description': sanitize_html(_text(ch, ITUNES + 'summary') or _text(ch, 'description'))[:20000],
         'image': image,
         'link': _http_url(_text(ch, 'link'), base),
-        'episodes': [],
+        'episodes': episodes,
     }
-    for item in ch.findall('item')[:MAX_EPISODES]:
-        enc = item.find('enclosure')
-        url, mime, length = '', '', 0
-        if enc is not None:
-            url, mime = _http_url(enc.get('url'), base), (enc.get('type') or '').strip()[:100]
-            length = int(enc.get('length')) if (enc.get('length') or '').isdigit() else 0
-        if not url:
-            mc = item.find(MEDIA + 'content')
-            if mc is not None:
-                url, mime = _http_url(mc.get('url'), base), (mc.get('type') or '').strip()[:100]
-        if not url or not _is_media(url, mime):
-            continue
-        it_ep_img = item.find(ITUNES + 'image')
-        transcript = ''
-        for t in item.findall(PODCAST + 'transcript'):
-            transcript = _http_url(t.get('url'), base)
-            if transcript:
-                break
-        notes = item.find(CONTENT + 'encoded')
-        notes = (notes.text if notes is not None and notes.text else '') or _text(item, 'description') or _text(item, ITUNES + 'summary')
-        guid = _text(item, 'guid') or url
-        show['episodes'].append({
-            'guid': guid[:1000],
-            'title': _clean_line(_text(item, 'title'), 500) or 'Untitled episode',
-            'published': parse_date(_text(item, 'pubDate')),
-            'duration': parse_duration(_text(item, ITUNES + 'duration')),
-            'url': url,
-            'mime': mime,
-            'length': length,
-            'notes': sanitize_html(notes),
-            'link': _http_url(_text(item, 'link'), base),
-            'image': _http_url(it_ep_img.get('href'), base) if it_ep_img is not None else '',
-            'transcript_url': transcript,
-        })
-    return show
 
 
-def _parse_atom(root, base):
-    def link(el, rel):
-        for l in el.findall(ATOM + 'link'):
-            if (l.get('rel') or 'alternate') == rel:
-                return l
+def _rss_item(item, base):
+    enc = item.find('enclosure')
+    url, mime, length = '', '', 0
+    if enc is not None:
+        url, mime = _http_url(enc.get('url'), base), (enc.get('type') or '').strip()[:100]
+        length = int(enc.get('length')) if (enc.get('length') or '').isdigit() else 0
+    if not url:
+        mc = item.find(MEDIA + 'content')
+        if mc is not None:
+            url, mime = _http_url(mc.get('url'), base), (mc.get('type') or '').strip()[:100]
+    if not url or not _is_media(url, mime):
         return None
+    it_ep_img = item.find(ITUNES + 'image')
+    transcript = ''
+    for t in item.findall(PODCAST + 'transcript'):
+        transcript = _http_url(t.get('url'), base)
+        if transcript:
+            break
+    notes = item.find(CONTENT + 'encoded')
+    notes = (notes.text if notes is not None and notes.text else '') or _text(item, 'description') or _text(item, ITUNES + 'summary')
+    guid = _text(item, 'guid') or url
+    return {
+        'guid': guid[:1000],
+        'title': _clean_line(_text(item, 'title'), 500) or 'Untitled episode',
+        'published': parse_date(_text(item, 'pubDate')),
+        'duration': parse_duration(_text(item, ITUNES + 'duration')),
+        'url': url,
+        'mime': mime,
+        'length': length,
+        'notes': sanitize_html(notes),
+        'link': _http_url(_text(item, 'link'), base),
+        'image': _http_url(it_ep_img.get('href'), base) if it_ep_img is not None else '',
+        'transcript_url': transcript,
+    }
 
-    alt = link(root, 'alternate')
-    show = {
+
+def _atom_link(el, rel):
+    for l in el.findall(ATOM + 'link'):
+        if (l.get('rel') or 'alternate') == rel:
+            return l
+    return None
+
+
+def _parse_atom(root, base, episodes):
+    alt = _atom_link(root, 'alternate')
+    return {
         'title': _clean_line(_text(root, ATOM + 'title'), 300) or 'Untitled podcast',
         'author': _clean_line(_text(root, ATOM + 'author/' + ATOM + 'name'), 300),
         'description': sanitize_html(_text(root, ATOM + 'subtitle'))[:20000],
         'image': _http_url(_text(root, ATOM + 'logo') or _text(root, ATOM + 'icon'), base),
         'link': _http_url(alt.get('href') if alt is not None else '', base),
-        'episodes': [],
+        'episodes': episodes,
     }
-    for entry in root.findall(ATOM + 'entry')[:MAX_EPISODES]:
-        enc = link(entry, 'enclosure')
-        if enc is None:
-            continue
-        url, mime = _http_url(enc.get('href'), base), (enc.get('type') or '')[:100]
-        if not url or not _is_media(url, mime):
-            continue
-        ealt = link(entry, 'alternate')
-        show['episodes'].append({
-            'guid': (_text(entry, ATOM + 'id') or url)[:1000],
-            'title': _clean_line(_text(entry, ATOM + 'title'), 500) or 'Untitled episode',
-            'published': parse_date(_text(entry, ATOM + 'published') or _text(entry, ATOM + 'updated')),
-            'duration': parse_duration(_text(entry, ITUNES + 'duration')),
-            'url': url,
-            'mime': mime,
-            'length': int(enc.get('length')) if (enc.get('length') or '').isdigit() else 0,
-            'notes': sanitize_html(_text(entry, ATOM + 'content') or _text(entry, ATOM + 'summary')),
-            'link': _http_url(ealt.get('href') if ealt is not None else '', base),
-            'image': '',
-            'transcript_url': '',
-        })
-    return show
+
+
+def _atom_entry(entry, base):
+    enc = _atom_link(entry, 'enclosure')
+    if enc is None:
+        return None
+    url, mime = _http_url(enc.get('href'), base), (enc.get('type') or '')[:100]
+    if not url or not _is_media(url, mime):
+        return None
+    ealt = _atom_link(entry, 'alternate')
+    return {
+        'guid': (_text(entry, ATOM + 'id') or url)[:1000],
+        'title': _clean_line(_text(entry, ATOM + 'title'), 500) or 'Untitled episode',
+        'published': parse_date(_text(entry, ATOM + 'published') or _text(entry, ATOM + 'updated')),
+        'duration': parse_duration(_text(entry, ITUNES + 'duration')),
+        'url': url,
+        'mime': mime,
+        'length': int(enc.get('length')) if (enc.get('length') or '').isdigit() else 0,
+        'notes': sanitize_html(_text(entry, ATOM + 'content') or _text(entry, ATOM + 'summary')),
+        'link': _http_url(ealt.get('href') if ealt is not None else '', base),
+        'image': '',
+        'transcript_url': '',
+    }
 
 
 # ------------------------------------------------------------------ OPML

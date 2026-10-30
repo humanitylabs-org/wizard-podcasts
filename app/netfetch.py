@@ -6,7 +6,10 @@ Every feed, search, artwork and episode request goes through open_url():
   link-local, CGNAT/Tailscale, multicast or reserved ranges);
 - the socket connects to that validated address (no second DNS lookup, so DNS
   rebinding cannot swap in a private address), TLS still verifies the real hostname;
-- redirects are followed by hand (max 5) and every hop is checked again.
+- redirects are followed by hand and every hop is checked again. Podcast enclosures
+  routinely chain 6-9 tracking hops (podtrac -> pdst.fm -> pdrl.fm -> pscrb.fm ->
+  mgln.ai -> claritas -> arttrk -> megaphone -> signed CDN URL), so the limit is 15;
+  a chain that comes back to an address it already visited is reported as a loop.
 """
 from __future__ import annotations
 
@@ -17,7 +20,7 @@ import ssl
 from urllib.parse import urljoin, urlsplit
 
 USER_AGENT = 'WizardPodcasts/0.1 (+https://github.com/humanitylabs-org/wizard-podcasts)'
-MAX_REDIRECTS = 5
+MAX_REDIRECTS = 15
 
 
 class FetchError(Exception):
@@ -120,8 +123,12 @@ class Response:
 
 
 def open_url(url: str, headers: dict | None = None, timeout: float = 20, method: str = 'GET') -> Response:
+    seen = set()
     for _ in range(MAX_REDIRECTS + 1):
         url = check_url(url)
+        if (method, url) in seen:
+            raise FetchError('That address redirects in a loop.')
+        seen.add((method, url))
         parts = urlsplit(url)
         https = parts.scheme.lower() == 'https'
         port = parts.port or (443 if https else 80)
