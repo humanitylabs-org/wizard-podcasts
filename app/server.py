@@ -418,7 +418,24 @@ class Server(ThreadingHTTPServer):
         self.server_name, self.server_port = 'localhost', self.server_address[1]
 
 
+def wait_for_data(limit=180):
+    """Runtipi creates the app-data bind folder as root and widens it just after start; wait for it
+    instead of crash-looping."""
+    import time
+    for _ in range(limit):
+        try:
+            P.DATA.mkdir(parents=True, exist_ok=True)
+            probe = P.DATA / '.write-test'
+            probe.write_text('ok')
+            probe.unlink()
+            return
+        except OSError:
+            time.sleep(1)
+    raise SystemExit(f'{P.DATA} is not writable')
+
+
 def main():
+    wait_for_data()
     P.init()
     P.start_workers()
     Server((os.environ.get('BIND', '0.0.0.0'), PORT), Handler).serve_forever()
