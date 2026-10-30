@@ -1,16 +1,19 @@
 'use strict';
-/* Podcasts view. Talks only to this app's documented relative API (api/...). Platform behaviour (Back root,
+/* Podcasts view (0.3): one feed of episodes from followed shows, show chips + one filter sheet on top, a find button,
+ * and a mini player. Talks only to this app's documented relative API (api/...). Platform behaviour (Back root,
  * appearance, update holds, ducking Music) comes from the shared WizardApp client. */
 const $ = id => document.getElementById(id);
 const W = window.WizardApp && window.WizardApp.version === 1 ? window.WizardApp : null;
 const audio = $('audio');
 const SPEEDS = [0.8, 1, 1.2, 1.5, 1.75, 2, 2.5, 3];
+const PAGE = 100;
 
 const state = {
-  tab: 'inbox',
-  stack: [],              // nested views above the current tab: {view, id}
+  stack: [],              // views above the feed: {view, id}
   settings: { speed: 1, skip_back: 15, skip_forward: 30, storage_cap_mb: 2048, refresh_minutes: 60, auto_download: true },
-  show: null, showEpisodes: [], showOffset: 0,
+  shows: [],              // every followed show, newest episode first (from api/feed)
+  feed: [], feedTotal: 0,
+  show: null, showEpisodes: [],
   episode: null,
   current: null,          // episode loaded in the player
   lastSaved: 0, savedPos: -1,
@@ -45,7 +48,7 @@ function toast(text, undo) {
   toastTimer = setTimeout(() => { $('toast').hidden = true; }, 5000);
 }
 
-// ------------------------------------------------------------------ formatting
+// ------------------------------------------------------------------ formatting (always the viewer's local time)
 function clock(sec) {
   sec = Math.max(0, Math.floor(sec || 0));
   const h = Math.floor(sec / 3600), m = Math.floor(sec % 3600 / 60), s = sec % 60;
@@ -55,15 +58,13 @@ function minutes(sec) {
   sec = Math.max(0, Math.round(sec || 0));
   if (sec < 60) return sec + ' sec';
   const h = Math.floor(sec / 3600), m = Math.round(sec % 3600 / 60);
-  return h ? h + ' h ' + (m ? m + ' min' : '') : m + ' min';
+  return h ? h + ' h' + (m ? ' ' + m + ' min' : '') : m + ' min';
 }
 function day(ts) {
-  if (!ts) return '';
   const d = new Date(ts * 1000), now = new Date();
   const opts = d.getFullYear() === now.getFullYear() ? { month: 'short', day: 'numeric' } : { month: 'short', day: 'numeric', year: 'numeric' };
   return d.toLocaleDateString(undefined, opts);
 }
-// Dates are always the viewer's local time (the browser's time zone and language).
 function startOfDay(d) { const x = new Date(d); x.setHours(0, 0, 0, 0); return x; }
 function daysBetween(later, earlier) { return Math.round((startOfDay(later) - startOfDay(earlier)) / 86400000); }
 const WEEK_START = (() => {  // 0 = Sunday … 6 = Saturday, from the viewer's locale; Monday when unknown
@@ -72,14 +73,14 @@ const WEEK_START = (() => {  // 0 = Sunday … 6 = Saturday, from the viewer's l
 })();
 function startOfWeek(now) { const s = startOfDay(now); s.setDate(s.getDate() - (s.getDay() - WEEK_START + 7) % 7); return s; }
 function timeOfDay(d) { return d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' }); }
-// Up next section for a publish time: Today, Yesterday, this week's weekdays, Last week, then months.
+// Feed section for a publish time: Today, Yesterday, this week's weekdays, Last week, then months.
 function dateGroup(ts, now = new Date()) {
   if (!ts) return { key: 'undated', label: 'Date unknown' };
   const d = new Date(ts * 1000), diff = daysBetween(now, d);
   if (diff <= 0) return { key: 'today', label: 'Today' };
   if (diff === 1) return { key: 'yesterday', label: 'Yesterday' };
   const week = startOfWeek(now);
-  if (d >= week) return { key: 'day-' + d.toDateString(), label: d.toLocaleDateString(undefined, { weekday: 'long' }) + ', ' + d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) };
+  if (d >= week) return { key: 'day-' + d.toDateString(), label: d.toLocaleDateString(undefined, { weekday: 'long' }) };
   const lastWeek = new Date(week); lastWeek.setDate(lastWeek.getDate() - 7);
   if (d >= lastWeek) return { key: 'last-week', label: 'Last week' };
   const opts = d.getFullYear() === now.getFullYear() ? { month: 'long' } : { month: 'long', year: 'numeric' };
@@ -103,18 +104,6 @@ function postedFull(ts) {
   if (!ts) return '';
   return new Date(ts * 1000).toLocaleString(undefined, { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' });
 }
-function episodeMeta(ep) {
-  const bits = [];
-  if (ep.show_title && state.stack.at(-1)?.view !== 'show') bits.push(ep.show_title);
-  if (ep.played) bits.push('Played');
-  else if (ep.position > 0 && ep.duration) bits.push(minutes(ep.duration - ep.position) + ' left');
-  else if (ep.duration) bits.push(minutes(ep.duration));
-  const d = ep.download || {};
-  if (d.state === 'downloading') bits.push('Downloading' + (d.size_bytes ? ' ' + Math.round(100 * d.progress_bytes / d.size_bytes) + '%' : '…'));
-  else if (d.state === 'queued') bits.push('Waiting to download');
-  else if (d.state === 'failed') bits.push('Download failed');
-  return bits.join(' · ');
-}
 function el(tag, cls, text) {
   const n = document.createElement(tag);
   if (cls) n.className = cls;
@@ -125,8 +114,7 @@ function icon(name) {
   const paths = {
     play: '<path d="M8 5.5v13l11-6.5z" class="pc-fill"/>',
     pause: '<path d="M7 5h3.5v14H7zM13.5 5H17v14h-3.5z" class="pc-fill"/>',
-    check: '<path d="M5 12.5l4.5 4.5L19 7.5"/>',
-    dl: '<path d="M12 4v11M7 10.5l5 5 5-5M5 20h14"/>',
+    warn: '<path d="M12 4 3 20h18z"/><path d="M12 10v4.5M12 17.2v.3"/>',
   };
   const s = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
   s.setAttribute('viewBox', '0 0 24 24'); s.setAttribute('aria-hidden', 'true');
@@ -136,6 +124,7 @@ function icon(name) {
 function art(img, url) {
   if (url) { img.src = url; img.hidden = false; } else { img.removeAttribute('src'); img.hidden = true; }
 }
+function showName(id, fallback) { const s = state.shows.find(x => x.id === id); return s ? s.short_title || s.title : fallback || ''; }
 
 // Show notes arrive sanitized by the server; this second allow-list pass rebuilds them node by node so nothing
 // but text, a few tags and http(s)/mailto links ever reaches the page.
@@ -162,34 +151,29 @@ function renderNotes(target, html) {
 }
 
 // ------------------------------------------------------------------ navigation
-const VIEWS = ['inbox', 'shows', 'add', 'show', 'episode', 'player'];
-function currentView() { return state.stack.length ? state.stack.at(-1).view : state.tab; }
+const VIEWS = ['feed', 'add', 'show', 'episode', 'player'];
+function currentView() { return state.stack.length ? state.stack.at(-1).view : 'feed'; }
 function paint() {
   const v = currentView();
   for (const name of VIEWS) $('view-' + name).hidden = name !== v;
-  for (const t of document.querySelectorAll('.pc-tab')) {
-    if (t.dataset.tab === state.tab) t.setAttribute('aria-current', 'page'); else t.removeAttribute('aria-current');
-  }
+  $('top').hidden = v !== 'feed';
   document.querySelector('.pc-app').dataset.view = v;
-  $('main').scrollTop = 0;
-}
-function setTab(tab) {
-  state.tab = tab; state.stack = [];
-  paint();
-  load(tab);
+  if (v !== 'feed') $('main').scrollTop = 0;
 }
 function openView(view, id) {
   if (state.stack.at(-1)?.view === view && state.stack.at(-1)?.id === id) return;
+  if (!state.stack.length) feedScroll = $('main').scrollTop;
   state.stack.push({ view, id });
   paint();
   load(view, id);
 }
+let feedScroll = 0;
 function popView() {
   if (!state.stack.length) return false;
   state.stack.pop();
   paint();
   const top = state.stack.at(-1);
-  load(top ? top.view : state.tab, top?.id);
+  if (!top) { $('main').scrollTop = feedScroll; loadFeed(); } else load(top.view, top.id);
   return true;
 }
 // A finishing action (mark played, unfollow) returns to the screen the owner came from: the previous view in the
@@ -199,21 +183,173 @@ function finish(message, undo) {
   if (W && W.nav.back()) return;
   if (message) toast(message, undo);
 }
+function reload() { const top = state.stack.at(-1); return load(top ? top.view : 'feed', top?.id); }
 
 async function load(view, id) {
   try {
-    if (view === 'inbox') return renderInbox(await api(inboxPath()));
-    if (view === 'shows') return renderShows(await api('api/shows'));
-    if (view === 'add') return setTimeout(() => $('search-input').focus({ preventScroll: true }), 50);
-    if (view === 'show') return renderShow(await api('api/shows/' + id + '?limit=50'));
+    if (view === 'feed') return await loadFeed();
+    if (view === 'add') { $('search-input').focus({ preventScroll: true }); return; }
+    if (view === 'show') return renderShow(await api('api/shows/' + id + '?limit=' + PAGE));
     if (view === 'episode') return renderEpisode(await api('api/episodes/' + id));
     if (view === 'player') return renderPlayer();
   } catch (e) { say(e.message, 'error'); }
 }
 
-// ------------------------------------------------------------------ rows
-function episodeRow(ep, { onDone } = {}) {
-  const li = el('li', 'pc-ep');
+// ------------------------------------------------------------------ one pop-up
+function sheet(title, ...body) {
+  $('sheet-h').textContent = title;
+  $('sheet-body').replaceChildren(...body);
+  WzSheet.open($('sheet'));
+}
+function closeSheet() { WzSheet.close($('sheet')); }
+function seg(options, value, onPick) {
+  const box = el('div', 'pc-seg');
+  box.setAttribute('role', 'group');
+  const paintSeg = v => { for (const b of box.children) b.setAttribute('aria-pressed', String(b.dataset.v === v)); };
+  for (const [v, label] of options) {
+    const b = el('button', 'pc-seg-b', label);
+    b.type = 'button'; b.dataset.v = v;
+    b.onclick = () => { paintSeg(v); onPick(v); };
+    box.append(b);
+  }
+  paintSeg(value);
+  return box;
+}
+function sheetRow(label, onclick, cls = '') {
+  const b = el('button', 'pc-sheet-row' + (cls ? ' ' + cls : ''), label);
+  b.type = 'button'; b.onclick = onclick;
+  return b;
+}
+
+// ------------------------------------------------------------------ feed filter (remembered on this device only)
+const FILTER_KEY = 'wizard-podcasts.feed-filter';
+const filter = (() => {
+  try {
+    const f = JSON.parse(localStorage.getItem(FILTER_KEY) || '{}');
+    return { show: Number.isInteger(f.show) ? f.show : null, state: ['started', 'played'].includes(f.state) ? f.state : 'unplayed', sort: f.sort === 'oldest' ? 'oldest' : 'newest' };
+  } catch (_) { return { show: null, state: 'unplayed', sort: 'newest' }; }
+})();
+try { localStorage.removeItem('wizard-podcasts.upnext-filter'); } catch (_) {}  // the 0.2 filter, retired
+function saveFilter() { try { localStorage.setItem(FILTER_KEY, JSON.stringify(filter)); } catch (_) {} }
+function setFilter(change) {
+  Object.assign(filter, change);
+  saveFilter();
+  $('main').scrollTop = 0;
+  loadFeed();
+}
+function feedPath(offset = 0) {
+  const qs = new URLSearchParams({ limit: String(PAGE) });
+  if (filter.show != null) qs.set('show_id', filter.show);
+  if (filter.state !== 'unplayed') qs.set('state', filter.state);
+  if (filter.sort === 'oldest') qs.set('sort', 'oldest');
+  if (offset) qs.set('offset', String(offset));
+  return 'api/feed?' + qs;
+}
+$('open-filter').onclick = () => sheet('Filter',
+  seg([['unplayed', 'Unplayed'], ['started', 'Started'], ['played', 'Played']], filter.state, v => setFilter({ state: v })),
+  seg([['newest', 'Newest first'], ['oldest', 'Oldest first']], filter.sort, v => setFilter({ sort: v })));
+
+// ------------------------------------------------------------------ show chips
+let chipSig = '';
+function chip(label, show) {
+  const b = el('button', 'pc-chip' + (show ? '' : ' pc-chip-all'));
+  b.type = 'button';
+  if (show) {
+    if (show.artwork) { const img = el('img', 'pc-chip-art'); img.alt = ''; img.loading = 'lazy'; img.src = show.artwork; b.append(img); }
+    else { const ph = el('span', 'pc-chip-art pc-chip-ph', (label || '?').slice(0, 1)); ph.setAttribute('aria-hidden', 'true'); b.append(ph); }
+    b.dataset.show = show.id;
+    b.title = show.title;
+    holdable(b, () => showSheet(show));
+    b.onclick = () => { if (b.__held) { b.__held = false; return; } if (filter.show === show.id) showSheet(show); else setFilter({ show: show.id }); };
+  } else {
+    b.dataset.all = '1';
+    b.onclick = () => setFilter({ show: null });
+  }
+  b.append(el('span', 'pc-chip-name', label));
+  return b;
+}
+// Long-press (touch) or right-click (mouse) opens a chip's show actions.
+function holdable(node, fn) {
+  let timer = 0, x = 0, y = 0;
+  const clear = () => { clearTimeout(timer); timer = 0; };
+  node.addEventListener('pointerdown', e => {
+    if (e.pointerType === 'mouse') return;
+    x = e.clientX; y = e.clientY;
+    timer = setTimeout(() => { timer = 0; node.__held = true; fn(); }, 500);
+  });
+  node.addEventListener('pointermove', e => { if (timer && Math.hypot(e.clientX - x, e.clientY - y) > 10) clear(); });
+  for (const t of ['pointerup', 'pointercancel', 'pointerleave']) node.addEventListener(t, clear);
+  node.addEventListener('contextmenu', e => { e.preventDefault(); if (!node.__held) fn(); });
+}
+function renderChips() {
+  const row = $('chips');
+  const sig = JSON.stringify(state.shows.map(s => [s.id, s.short_title, s.artwork]));
+  if (sig !== chipSig) {
+    const first = !chipSig;
+    chipSig = sig;
+    const left = row.scrollLeft;
+    row.replaceChildren(chip('All', null), ...state.shows.map(s => chip(s.short_title || s.title, s)));
+    row.scrollLeft = left;
+    if (first) requestAnimationFrame(() => row.querySelector('[data-show="' + filter.show + '"]')?.scrollIntoView({ block: 'nearest', inline: 'center' }));
+  }
+  for (const b of row.children) b.setAttribute('aria-pressed', String(b.dataset.all ? filter.show == null : +b.dataset.show === filter.show));
+  $('filter-dot').hidden = filter.state === 'unplayed' && filter.sort === 'newest';
+}
+// A mouse wheel scrolls the chip row sideways on desktop.
+$('chips').addEventListener('wheel', e => {
+  const row = $('chips');
+  if (Math.abs(e.deltaY) > Math.abs(e.deltaX) && row.scrollWidth > row.clientWidth) { row.scrollLeft += e.deltaY; e.preventDefault(); }
+}, { passive: false });
+
+// One show's actions: its full episode list, auto-download, unfollow (second tap confirms).
+function showSheet(show) {
+  const auto = el('label', 'pc-sheet-row pc-switch');
+  const box = el('input'); box.type = 'checkbox'; box.checked = !!show.auto_download;
+  auto.append(el('span', '', 'Auto-download'), box);
+  box.onchange = async () => {
+    try { const d = await api('api/shows/' + show.id, { auto_download: box.checked }); show.auto_download = d.show.auto_download; box.checked = d.show.auto_download; }
+    catch (e) { box.checked = !box.checked; say(e.message, 'error'); }
+  };
+  const unsub = sheetRow('Unfollow', () => {
+    if (!unsub.dataset.armed) { unsub.dataset.armed = '1'; unsub.textContent = 'Tap again to unfollow'; return; }
+    unfollow(show);
+  }, 'pc-danger');
+  const rows = [];
+  if (currentView() !== 'show') rows.push(sheetRow('All episodes', () => { closeSheet(); openView('show', show.id); }));
+  rows.push(auto, unsub);
+  sheet(show.title, ...rows);
+}
+async function unfollow(show) {
+  try {
+    await api('api/shows/' + show.id + '/unsubscribe', {});
+    closeSheet();
+    if (state.current?.show_id === show.id) unloadPlayer();
+    if (filter.show === show.id) { filter.show = null; saveFilter(); }
+    const undo = async () => { await api('api/subscribe', { url: show.feed_url, auto_download: show.auto_download }); reload(); };
+    if (currentView() === 'show') finish('Unfollowed ' + show.title, undo);
+    else { toast('Unfollowed ' + show.title, undo); reload(); }
+  } catch (e) { say(e.message, 'error'); }
+}
+
+// ------------------------------------------------------------------ feed
+let feedSeq = 0;
+async function loadFeed(append = false) {
+  const seq = ++feedSeq;
+  const data = await api(feedPath(append ? state.feed.length : 0));
+  if (seq !== feedSeq) return;
+  state.shows = data.shows || [];
+  // A remembered show that is no longer followed falls back to All.
+  if (filter.show != null && !state.shows.some(s => s.id === filter.show)) { filter.show = null; saveFilter(); return loadFeed(); }
+  state.feed = append ? state.feed.concat(data.episodes) : data.episodes;
+  state.feedTotal = data.total;
+  renderChips();
+  renderFeed();
+  if (data.now_playing && !state.current) loadIntoPlayer(data.now_playing, false);
+}
+$('feed-more').onclick = () => loadFeed(true).catch(e => say(e.message, 'error'));
+
+function episodeRow(ep, { showShow = true } = {}) {
+  const li = el('li', 'pc-ep' + (ep.played ? ' pc-played' : ''));
   li.dataset.id = ep.id;
   const open = el('button', 'wz-row pc-ep-open');
   open.type = 'button';
@@ -221,15 +357,14 @@ function episodeRow(ep, { onDone } = {}) {
   art(img, ep.artwork);
   const main = el('span', 'wz-main');
   const meta = el('small', 'pc-meta');
+  const bits = [];
   const when = posted(ep.published);
-  if (when) {
-    const w = el('time', 'pc-when', when);
-    w.dateTime = new Date(ep.published * 1000).toISOString();
-    w.title = postedFull(ep.published);
-    meta.append(w);
-  }
-  const rest = episodeMeta(ep);
-  if (rest) meta.append((when ? ' · ' : '') + rest);
+  if (when) bits.push(when);
+  if (ep.duration) bits.push(minutes(ep.duration));
+  // the show name gives way first on a narrow row; when and how long always stay whole
+  if (showShow) meta.append(el('span', 'pc-meta-show', showName(ep.show_id, ep.show_title)), el('span', 'pc-meta-sep', bits.length ? ' · ' : ''));
+  meta.append(el('span', 'pc-meta-when', bits.join(' · ')));
+  if (ep.published) meta.title = postedFull(ep.published);
   main.append(el('b', 'pc-clamp', ep.title), meta);
   if (ep.position > 0 && ep.duration && !ep.played) {
     const bar = el('span', 'pc-progress'); const fill = el('i');
@@ -237,309 +372,112 @@ function episodeRow(ep, { onDone } = {}) {
     bar.append(fill); main.append(bar);
   }
   open.append(img, main);
-  open.onclick = () => openView('episode', ep.id);
-  const play = el('button', 'pc-icon pc-icon-accent');
-  play.type = 'button';
-  const playing = state.current?.id === ep.id && !audio.paused;
-  play.append(icon(playing ? 'pause' : 'play'));
-  play.setAttribute('aria-label', (playing ? 'Pause ' : 'Play ') + ep.title);
-  play.onclick = () => (state.current?.id === ep.id ? togglePlay() : playEpisode(ep));
-  li.append(open, play);
-  if (!ep.played) {
-    const done = el('button', 'pc-icon');
-    done.type = 'button';
-    done.append(icon('check'));
-    done.setAttribute('aria-label', 'Mark played: ' + ep.title);
-    done.onclick = async () => {
-      done.disabled = true;
-      try {
-        await api('api/episodes/' + ep.id + '/mark', { played: true });
-        li.remove();
-        if (onDone) onDone();
-        toast('Marked played', async () => { await api('api/episodes/' + ep.id + '/mark', { played: false, in_inbox: ep.in_inbox }); load(currentView(), state.stack.at(-1)?.id); });
-      } catch (e) { done.disabled = false; say(e.message, 'error'); }
-    };
-    li.append(done);
+  if (ep.download?.state === 'failed') {
+    const w = el('span', 'pc-failed'); w.append(icon('warn')); w.title = 'Download failed';
+    w.setAttribute('aria-label', 'Download failed'); open.append(w);
   }
+  open.onclick = () => openView('episode', ep.id);
+  li.append(open);
   return li;
 }
-
-// ------------------------------------------------------------------ inbox
-let pollTimer = 0;
-function pollIfBusy(list) {
-  clearTimeout(pollTimer);
-  if (list.some(e => ['queued', 'downloading'].includes(e.download?.state))) {
-    pollTimer = setTimeout(() => { if (!document.hidden) load(currentView(), state.stack.at(-1)?.id); }, 4000);
-  }
-}
-// Up next filter: one show and/or one progress state (unplayed | started), plus the order (newest | oldest first).
-// Remembered on this device only; the server filters and sorts (GET api/inbox?show_id=&state=&sort=).
-// Podcasts and YouTube shows are one list: a type filter saved by 0.2.1 is dropped so nobody stays filtered by it.
-const FILTER_KEY = 'wizard-podcasts.upnext-filter';
-const filter = (() => {
-  try {
-    const f = JSON.parse(localStorage.getItem(FILTER_KEY) || '{}');
-    return { show: Number.isInteger(f.show) ? f.show : null, state: ['unplayed', 'started'].includes(f.state) ? f.state : null,
-      sort: f.sort === 'oldest' ? 'oldest' : 'newest', stale: 'kind' in f };
-  } catch (_) { return { show: null, state: null, sort: 'newest', stale: true }; }
-})();
-function saveFilter() {
-  try { localStorage.setItem(FILTER_KEY, JSON.stringify({ show: filter.show, state: filter.state, sort: filter.sort })); } catch (_) {}
-}
-if (filter.stale) saveFilter();
-delete filter.stale;
-function inboxPath() {
-  const qs = new URLSearchParams();
-  if (filter.show != null) qs.set('show_id', filter.show);
-  if (filter.state) qs.set('state', filter.state);
-  if (filter.sort === 'oldest') qs.set('sort', 'oldest');
-  const t = qs.toString();
-  return 'api/inbox' + (t ? '?' + t : '');
-}
-function setFilter(change) {
-  Object.assign(filter, change);
-  saveFilter();
-  load('inbox');
-}
-function filtering() { return filter.show != null || !!filter.state; }
-
-let chipSig = '';
-function chip(label, opts) {
-  const b = el('button', 'pc-chip' + (opts.all ? ' pc-chip-all' : ''));
-  b.type = 'button';
-  if (opts.show) {
-    const s = opts.show;
-    if (s.artwork) { const img = el('img', 'pc-chip-art'); img.alt = ''; img.loading = 'lazy'; img.src = s.artwork; b.append(img); }
-    else { const ph = el('span', 'pc-chip-art pc-chip-ph', (s.short_title || s.title || '?').slice(0, 1)); ph.setAttribute('aria-hidden', 'true'); b.append(ph); }
-    b.dataset.show = s.id;
-    b.title = s.title;
-    b.setAttribute('aria-label', s.title + ', ' + s.unplayed + ' in Up next');
-  } else b.dataset.all = '1';
-  b.append(el('span', 'pc-chip-name', label));
-  if (opts.show) b.append(el('span', 'pc-chip-n', String(opts.show.unplayed)));
-  b.onclick = opts.onclick;
-  return b;
-}
-function renderFilters(f) {
-  const box = $('inbox-filters');
-  const shows = f.shows || [];
-  const bothStates = f.started > 0 && f.unplayed > 0;
-  const canSort = f.unplayed > 1 && filter.state !== 'started';
-  box.hidden = !f.total || (shows.length < 2 && !bothStates && !canSort && !filtering() && filter.sort === 'newest');
-  if (box.hidden) return;
-  // Rebuild the chip row only when its content changes, so polling during downloads keeps its scroll place.
-  const sig = JSON.stringify([shows.map(s => [s.id, s.unplayed, s.short_title, s.artwork]), filter.show]);
-  const row = $('chips-shows');
-  if (sig !== chipSig) {
-    chipSig = sig;
-    const left = row.scrollLeft;
-    row.replaceChildren(
-      chip('All', { all: true, onclick: () => setFilter({ show: null, state: null }) }),
-      ...shows.map(s => chip(s.short_title || s.title, { show: s, onclick: () => setFilter({ show: filter.show === s.id ? null : s.id }) })));
-    row.scrollLeft = left;
-  }
-  for (const b of row.children) b.setAttribute('aria-pressed', String(b.dataset.all ? !filtering() : +b.dataset.show === filter.show));
-  $('seg-state').hidden = !bothStates && !filter.state;
-  $('sort-toggle').hidden = !canSort && filter.sort === 'newest';
-  $('chips-more').hidden = $('seg-state').hidden && $('sort-toggle').hidden;
-  const oldest = filter.sort === 'oldest';
-  $('sort-label').textContent = oldest ? 'Oldest first' : 'Newest first';
-  $('sort-toggle').setAttribute('aria-label', oldest ? 'Order: oldest first. Tap for newest first' : 'Order: newest first. Tap for oldest first');
-  $('sort-toggle').dataset.sort = filter.sort;
-  for (const b of $('seg-state').children) b.setAttribute('aria-pressed', String(b.dataset.state === filter.state));
-}
-for (const b of document.querySelectorAll('#seg-state .pc-seg-b')) b.onclick = () => setFilter({ state: filter.state === b.dataset.state ? null : b.dataset.state });
-$('sort-toggle').onclick = async () => {
-  Object.assign(filter, { sort: filter.sort === 'oldest' ? 'newest' : 'oldest' });
-  saveFilter();
-  await load('inbox');
-  $('main').scrollTop = 0;
-};
-$('filter-clear').onclick = () => setFilter({ show: null, state: null });
-// A mouse wheel scrolls the chip row sideways on desktop.
-$('chips-shows').addEventListener('wheel', e => {
-  const row = $('chips-shows');
-  if (Math.abs(e.deltaY) > Math.abs(e.deltaX) && row.scrollWidth > row.clientWidth) { row.scrollLeft += e.deltaY; e.preventDefault(); }
-}, { passive: false });
-function revealChosenChip() {
-  const on = $('chips-shows').querySelector('.pc-chip[aria-pressed="true"][data-show]');
-  if (on) on.scrollIntoView({ block: 'nearest', inline: 'nearest' });
-}
-
-let lastFilters = null, inboxReload = 0;
-// New episodes in date sections with sticky headers (Today, Yesterday, weekdays, Last week, months), in the
-// server's order, so Oldest first simply runs the sections the other way.
-function renderGroups(list, onDone) {
+// Episodes in quiet date sections (Today, Yesterday, weekdays, Last week, months) in the server's order, so
+// Oldest first simply runs the sections the other way.
+function renderFeed() {
   const now = new Date(), groups = [];
-  for (const e of list) {
+  for (const e of state.feed) {
     const g = dateGroup(e.published, now);
     if (groups.at(-1)?.key !== g.key) groups.push({ ...g, eps: [] });
     groups.at(-1).eps.push(e);
   }
-  $('inbox-groups').replaceChildren(...groups.map(g => {
+  const showShow = filter.show == null;
+  $('feed-groups').replaceChildren(...groups.map(g => {
     const sec = el('section', 'pc-group');
     sec.dataset.group = g.key;
-    const h = el('h2', 'pc-day-h', g.label);
-    h.append(el('span', 'pc-day-n', String(g.eps.length)));
     const ul = el('ul', 'wz-list');
-    ul.append(...g.eps.map(e => episodeRow(e, { onDone })));
-    sec.append(h, ul);
+    ul.append(...g.eps.map(e => episodeRow(e, { showShow })));
+    sec.append(el('h2', 'pc-day-h', g.label), ul);
     return sec;
   }));
-}
-function recount() {
-  for (const sec of $('inbox-groups').querySelectorAll('.pc-group')) {
-    const n = sec.querySelector('ul').children.length;
-    if (!n) sec.remove(); else sec.querySelector('.pc-day-n').textContent = String(n);
+  $('feed-more').hidden = state.feed.length >= state.feedTotal;
+  const empty = !state.feed.length;
+  $('feed-empty').hidden = !empty;
+  if (!empty) return;
+  const go = $('feed-empty-go');
+  go.hidden = true;
+  if (!state.shows.length) {
+    $('feed-empty-text').textContent = 'Follow a show to see its episodes here.';
+    go.hidden = false; go.textContent = 'Find shows'; go.onclick = () => openView('add');
+  } else if (filter.show != null) {
+    $('feed-empty-text').textContent = filter.state === 'played' ? 'Nothing played yet.' : filter.state === 'started' ? 'Nothing started.' : 'Nothing new.';
+    go.hidden = false; go.textContent = 'All episodes'; go.onclick = () => openView('show', filter.show);
+  } else {
+    $('feed-empty-text').textContent = filter.state === 'played' ? 'Nothing played yet.' : filter.state === 'started' ? 'Nothing started.' : 'All caught up.';
   }
-  const c = $('list-continue').children.length;
-  $('continue-count').textContent = String(c);
-  $('inbox-continue').hidden = !c;
-}
-function renderInbox(data) {
-  const f = data.filters || { shows: [], started: 0, unplayed: 0, total: (data.continue || []).length + (data.new || []).length };
-  lastFilters = f;
-  // A remembered show that has nothing left in Up next falls back to All.
-  if (filter.show != null && !(f.shows || []).some(s => s.id === filter.show)) { filter.show = null; saveFilter(); return load('inbox'); }
-  const firstPaint = !chipSig;
-  renderFilters(f);
-  if (firstPaint) revealChosenChip();
-  const cont = data.continue || [], fresh = data.new || [];
-  const emptyCheck = () => {
-    const any = !!($('list-continue').children.length || $('inbox-groups').querySelector('.pc-ep'));
-    $('inbox-empty').hidden = any || filtering() && f.total > 0;
-    $('inbox-none').hidden = any || !filtering() || !f.total;
-  };
-  const onDone = () => {
-    recount();
-    emptyCheck();
-    // counts on the chips and the tab badge come from the server
-    clearTimeout(inboxReload);
-    inboxReload = setTimeout(() => { if (currentView() === 'inbox') load('inbox'); }, 600);
-  };
-  $('list-continue').replaceChildren(...cont.map(e => episodeRow(e, { onDone })));
-  renderGroups(fresh, onDone);
-  recount();
-  badge(data.filters ? f.unplayed : fresh.length);
-  emptyCheck();
-  if (data.now_playing && !state.current) loadIntoPlayer(data.now_playing, false);
-  pollIfBusy(cont.concat(fresh));
-}
-function badge(n) { $('tab-badge').hidden = !n; $('tab-badge').textContent = n > 99 ? '99+' : String(n); }
-
-// ------------------------------------------------------------------ shows
-function renderShows(data) {
-  const grid = $('shows-grid');
-  grid.replaceChildren();
-  for (const s of data.shows) {
-    const b = el('button', 'pc-show');
-    b.type = 'button';
-    const img = el('img', 'pc-art pc-art-tile'); img.alt = ''; img.loading = 'lazy';
-    art(img, s.artwork);
-    if (!s.artwork) { const ph = el('span', 'pc-art pc-art-tile pc-art-ph', (s.title || '?').slice(0, 1)); ph.setAttribute('aria-hidden', 'true'); b.append(ph); }
-    else b.append(img);
-    b.append(el('b', 'pc-clamp', s.title));
-    b.append(el('small', '', s.pending ? 'Loading…' : s.last_error ? 'Feed problem' : s.new ? s.new + ' new' : s.episodes + ' episodes'));
-    b.onclick = () => openView('show', s.id);
-    grid.append(b);
-  }
-  $('shows-empty').hidden = data.shows.length > 0;
-  if (data.shows.some(s => s.pending)) { clearTimeout(pollTimer); pollTimer = setTimeout(() => { if (currentView() === 'shows') load('shows'); }, 4000); }
-  api('api/status').then(st => {
-    $('storage-note').textContent = st.storage_used_mb + ' MB of ' + (st.storage_cap_mb / 1024).toFixed(1).replace('.0', '') + ' GB used · ' + st.downloaded + ' downloaded';
-    $('refresh-note').textContent = st.last_refresh ? 'Last checked ' + new Date(st.last_refresh * 1000).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' }) : 'Checks on its own';
-  }).catch(() => {});
 }
 
+// ------------------------------------------------------------------ show page (full back catalogue)
 function renderShow(data, append = false) {
   const s = data.show;
   state.show = s;
-  if (!append) { state.showEpisodes = []; }
-  state.showEpisodes = state.showEpisodes.concat(data.episodes);
-  state.showOffset = state.showEpisodes.length;
+  state.showEpisodes = append ? state.showEpisodes.concat(data.episodes) : data.episodes;
   art($('show-art'), s.artwork);
   $('show-title').textContent = s.title;
-  $('show-meta').textContent = [s.author, s.episodes + ' episodes', s.new ? s.new + ' new' : ''].filter(Boolean).join(' · ');
-  $('show-yt').hidden = s.source !== 'youtube';
-  $('show-auto').setAttribute('aria-pressed', String(s.auto_download));
-  $('show-auto').textContent = s.auto_download ? 'Auto-download on' : 'Auto-download off';
+  $('show-meta').textContent = [s.author !== s.title ? s.author : '', s.episodes + ' episodes'].filter(Boolean).join(' · ');
   $('show-error').hidden = !s.last_error;
   $('show-error').textContent = s.last_error ? 'Last check failed: ' + s.last_error : '';
-  $('show-about').hidden = !s.description_html;
-  renderNotes($('show-desc'), s.description_html);
   const list = $('show-episodes');
   if (!append) list.replaceChildren();
-  for (const e of data.episodes) list.append(episodeRow(e));
-  $('show-more').hidden = state.showOffset >= s.episodes;
-  pollIfBusy(data.episodes);
+  for (const e of data.episodes) list.append(episodeRow(e, { showShow: false }));
+  $('show-more').hidden = state.showEpisodes.length >= s.episodes;
+  if (s.pending) setTimeout(() => { if (currentView() === 'show' && state.show?.id === s.id) load('show', s.id); }, 4000);
 }
 $('show-more').onclick = async () => {
-  try { renderShow(await api('api/shows/' + state.show.id + '?limit=50&offset=' + state.showOffset), true); } catch (e) { say(e.message, 'error'); }
+  try { renderShow(await api('api/shows/' + state.show.id + '?limit=' + PAGE + '&offset=' + state.showEpisodes.length), true); } catch (e) { say(e.message, 'error'); }
 };
-$('show-auto').onclick = async () => {
-  const on = $('show-auto').getAttribute('aria-pressed') !== 'true';
-  try { const d = await api('api/shows/' + state.show.id, { auto_download: on }); state.show.auto_download = d.show.auto_download; $('show-auto').setAttribute('aria-pressed', String(d.show.auto_download)); $('show-auto').textContent = d.show.auto_download ? 'Auto-download on' : 'Auto-download off'; }
-  catch (e) { say(e.message, 'error'); }
-};
-$('show-refresh').onclick = async () => {
-  const b = $('show-refresh'); b.disabled = true; b.textContent = 'Checking…';
-  try {
-    const r = await api('api/shows/' + state.show.id + '/refresh', {});
-    toast(r.ok ? (r.new_episodes ? r.new_episodes + ' new episode' + (r.new_episodes > 1 ? 's' : '') : 'No new episodes') : r.error);
-    renderShow(await api('api/shows/' + state.show.id + '?limit=50'));
-  } catch (e) { say(e.message, 'error'); }
-  finally { b.disabled = false; b.textContent = 'Check now'; }
-};
-$('show-unsub').onclick = () => {
-  $('unsub-text').textContent = '“' + state.show.title + '” and its downloaded episodes will be removed from this Wizard.';
-  WzSheet.open($('unsub-sheet'));
-};
-$('unsub-no').onclick = () => WzSheet.close($('unsub-sheet'));
-$('unsub-yes').onclick = async () => {
-  const s = state.show;
-  $('unsub-yes').disabled = true;
-  try {
-    await api('api/shows/' + s.id + '/unsubscribe', {});
-    WzSheet.close($('unsub-sheet'));
-    if (state.current?.show_id === s.id) unloadPlayer();
-    finish('Unfollowed ' + s.title, async () => { await api('api/subscribe', { url: s.feed_url, auto_download: s.auto_download }); load(currentView(), state.stack.at(-1)?.id); });
-  } catch (e) { say(e.message, 'error'); }
-  finally { $('unsub-yes').disabled = false; }
-};
+$('show-actions').onclick = () => state.show && showSheet(state.show);
 
-// ------------------------------------------------------------------ episode
+// ------------------------------------------------------------------ episode page
+let epPoll = 0;
 function renderEpisode(ep) {
   state.episode = ep;
   art($('ep-art'), ep.artwork);
   $('ep-show').textContent = ep.show_title || '';
   $('ep-show').onclick = () => openView('show', ep.show_id);
   $('ep-title').textContent = ep.title;
-  $('ep-meta').textContent = [postedFull(ep.published), ep.duration ? minutes(ep.duration) : '', ep.played ? 'Played' : ''].filter(Boolean).join(' · ');
-  const isCurrent = state.current?.id === ep.id;
-  const playLabel = isCurrent && !audio.paused ? 'Pause' : ep.position > 0 && !ep.played ? 'Resume from ' + clock(ep.position) : 'Play';
-  $('ep-play').replaceChildren(icon(isCurrent && !audio.paused ? 'pause' : 'play'), el('span', '', playLabel));
-  $('ep-play').onclick = () => (isCurrent ? togglePlay() : playEpisode(ep));
+  $('ep-meta').textContent = [postedFull(ep.published), ep.duration ? minutes(ep.duration) : ''].filter(Boolean).join(' · ');
+  paintEpisodePlay();
   const d = ep.download;
   const dl = $('ep-download');
   dl.disabled = false;
   if (d.state === 'done') { dl.textContent = 'Remove download'; dl.onclick = () => episodeAction(ep, 'delete-download', 'Download removed'); }
   else if (d.state === 'queued' || d.state === 'downloading') { dl.textContent = 'Stop download'; dl.onclick = () => episodeAction(ep, 'delete-download', 'Download stopped'); }
-  else { dl.textContent = d.state === 'failed' ? 'Try download again' : 'Download'; dl.onclick = () => episodeAction(ep, 'download', 'Downloading'); }
-  const note = d.state === 'done' ? 'Saved on your Wizard · ' + Math.round(d.size_bytes / 1048576) + ' MB'
-    : d.state === 'downloading' ? 'Downloading' + (d.size_bytes ? ' ' + Math.round(100 * d.progress_bytes / d.size_bytes) + '%' : '…')
-    : d.state === 'queued' ? 'Waiting to download' : d.state === 'failed' ? (d.error || 'Download failed') : 'Plays straight from the publisher until downloaded';
-  $('ep-dl-note').hidden = false; $('ep-dl-note').textContent = note;
+  else { dl.textContent = d.state === 'failed' ? 'Retry download' : 'Download'; dl.onclick = () => episodeAction(ep, 'download', 'Downloading'); }
+  const note = d.state === 'downloading' ? 'Downloading' + (d.size_bytes ? ' ' + Math.round(100 * d.progress_bytes / d.size_bytes) + '%' : '…')
+    : d.state === 'failed' ? (d.error || 'Download failed') : '';
+  $('ep-dl-note').hidden = !note; $('ep-dl-note').textContent = note;
   $('ep-mark').textContent = ep.played ? 'Mark unplayed' : 'Mark played';
   $('ep-mark').onclick = async () => {
     try {
       const was = ep.played, inbox = ep.in_inbox;
       await api('api/episodes/' + ep.id + '/mark', { played: !was });
-      if (!was) { if (state.current?.id === ep.id && !audio.paused) audio.pause(); finish('Marked played', async () => { await api('api/episodes/' + ep.id + '/mark', { played: false, in_inbox: inbox }); load(currentView(), state.stack.at(-1)?.id); }); }
-      else renderEpisode(await api('api/episodes/' + ep.id));
+      if (!was) {
+        if (state.current?.id === ep.id) unloadPlayer();
+        finish('Marked played', async () => { await api('api/episodes/' + ep.id + '/mark', { played: false, in_inbox: inbox }); reload(); });
+      } else renderEpisode(await api('api/episodes/' + ep.id));
     } catch (e) { say(e.message, 'error'); }
   };
   renderNotes($('ep-notes'), ep.notes_html);
-  pollIfBusy([ep]);
+  clearTimeout(epPoll);
+  if (['queued', 'downloading'].includes(d.state)) epPoll = setTimeout(() => { if (currentView() === 'episode' && state.episode?.id === ep.id && !document.hidden) load('episode', ep.id); }, 4000);
+}
+function paintEpisodePlay() {
+  const ep = state.episode;
+  if (!ep) return;
+  const isCurrent = state.current?.id === ep.id, playing = isCurrent && !audio.paused;
+  const pos = isCurrent ? audio.currentTime : ep.position;
+  const label = playing ? 'Pause' : pos > 0 && !ep.played ? 'Resume from ' + clock(pos) : 'Play';
+  $('ep-play').replaceChildren(icon(playing ? 'pause' : 'play'), el('span', '', label));
+  $('ep-play').onclick = () => (isCurrent ? togglePlay() : playEpisode(ep));
 }
 async function episodeAction(ep, action, message) {
   $('ep-download').disabled = true;
@@ -547,105 +485,125 @@ async function episodeAction(ep, action, message) {
   catch (e) { say(e.message, 'error'); $('ep-download').disabled = false; }
 }
 
-// ------------------------------------------------------------------ search / add
+// ------------------------------------------------------------------ find shows (podcasts and YouTube channels, one list)
+let searchSeq = 0, searchTimer = 0;
+const isFeedUrl = t => /^https?:\/\//i.test(t) && !/youtube\.com|youtu\.be/i.test(t);
+async function runSearch(text) {
+  const seq = ++searchSeq;
+  const note = $('search-note');
+  note.hidden = false; note.textContent = 'Searching…';
+  try {
+    const r = await api('api/search?q=' + encodeURIComponent(text));
+    if (seq !== searchSeq) return;
+    const a = r.results || [], y = r.youtube || [], merged = [];
+    for (let i = 0; i < Math.max(a.length, y.length); i++) { if (a[i]) merged.push(a[i]); if (y[i]) merged.push(y[i]); }
+    $('search-results').replaceChildren(...merged.map(resultRow));
+    note.hidden = merged.length > 0;
+    note.textContent = merged.length ? '' : 'No shows found.';
+  } catch (e) { if (seq === searchSeq) { note.hidden = true; say(e.message, 'error'); } }
+}
+$('search-input').addEventListener('input', () => {
+  clearTimeout(searchTimer);
+  const text = $('search-input').value.trim();
+  if (text.length < 3 || /^https?:\/\//i.test(text)) return;
+  searchTimer = setTimeout(() => runSearch(text), 600);
+});
 $('search-form').onsubmit = async event => {
   event.preventDefault();
+  clearTimeout(searchTimer);
   const text = $('search-input').value.trim();
   if (!text) return;
-  const list = $('search-results');
-  $('search-go').disabled = true;
+  if (!isFeedUrl(text)) return runSearch(text);
   try {
-    if (/^https?:\/\//i.test(text)) {
-      say('Loading feed…', 'note');
-      const r = await api('api/subscribe', { url: text });
-      say('');
-      $('search-input').value = '';
-      toast(r.already_subscribed ? 'Already following ' + r.show.title : 'Following ' + r.show.title);
-      openView('show', r.show.id);
-      return;
-    }
-    $('search-note').textContent = 'Searching…';
-    const r = await api('api/search?q=' + encodeURIComponent(text));
-    list.replaceChildren();
-    for (const item of r.results) list.append(resultRow(item));
-    const yt = r.youtube || [];
-    if (yt.length) {
-      const h = el('li', 'pc-result-h', 'YouTube channels');
-      h.setAttribute('role', 'presentation');
-      list.append(h);
-      for (const item of yt) list.append(resultRow(item));
-    }
-    const notes = [];
-    if (r.results.length) notes.push(r.results.length + ' shows from the Apple Podcasts directory');
-    if (yt.length) notes.push(yt.length + ' YouTube channel' + (yt.length > 1 ? 's' : ''));
-    $('search-note').textContent = notes.length ? notes.join(' · ') : 'No shows found. Try another name, or paste the feed address.';
-  } catch (e) { $('search-note').textContent = ''; say(e.message, 'error'); }
-  finally { $('search-go').disabled = false; }
+    say('Loading feed…', 'note');
+    const r = await api('api/subscribe', { url: text });
+    say('');
+    $('search-input').value = '';
+    toast(r.already_subscribed ? 'Already following ' + r.show.title : 'Following ' + r.show.title);
+    openView('show', r.show.id);
+  } catch (e) { say(e.message, 'error'); }
 };
 function resultRow(item) {
-  const li = el('li', 'pc-ep');
-  const main = el('div', 'wz-row pc-result');
+  const li = el('li', 'pc-ep pc-result');
+  const main = el('div', 'wz-row');
   const img = el('img', 'pc-art pc-art-row'); img.alt = ''; img.loading = 'lazy';
   art(img, item.artwork);
   const text = el('span', 'wz-main');
-  text.append(el('b', 'pc-clamp', item.title), el('small', '', [item.author, item.source === 'youtube' ? item.subscribers : item.genre].filter(Boolean).join(' · ')));
+  const sub = item.source === 'youtube' ? [item.author, item.subscribers] : [item.author];
+  text.append(el('b', 'pc-clamp', item.title), el('small', '', sub.filter(Boolean).join(' · ')));
   main.append(img, text);
-  const btn = el('button', item.subscribed ? 'wz-button secondary pc-follow' : 'wz-button pc-follow', item.subscribed ? 'Following' : 'Follow');
+  const btn = el('button', 'pc-follow');
   btn.type = 'button';
-  btn.disabled = item.subscribed;
+  let showId = item.show_id || null;
+  const paintBtn = on => { btn.textContent = on ? 'Following' : 'Follow'; btn.setAttribute('aria-pressed', String(on)); };
+  paintBtn(!!item.subscribed);
   btn.onclick = async () => {
-    btn.disabled = true; btn.textContent = 'Adding…';
+    btn.disabled = true;
     try {
-      const r = await api('api/subscribe', { url: item.feed_url });
-      btn.textContent = 'Following'; btn.className = 'wz-button secondary pc-follow';
-      toast('Following ' + r.show.title + (r.show.new ? ' · newest episode is in Up next' : ''));
-    } catch (e) { btn.disabled = false; btn.textContent = 'Follow'; say(e.message, 'error'); }
+      if (btn.getAttribute('aria-pressed') === 'true' && showId) {
+        await api('api/shows/' + showId + '/unsubscribe', {});
+        if (state.current?.show_id === showId) unloadPlayer();
+        showId = null; paintBtn(false);
+      } else {
+        const r = await api('api/subscribe', { url: item.feed_url });
+        showId = r.show.id; paintBtn(true);
+      }
+    } catch (e) { say(e.message, 'error'); }
+    finally { btn.disabled = false; }
   };
   li.append(main, btn);
   return li;
 }
-$('opml-file').onchange = async () => {
-  const f = $('opml-file').files[0];
-  if (!f) return;
-  if (f.size > 2 * 1048576) { say('That file is larger than 2 MB.', 'error'); return; }
-  try {
-    const r = await api('api/opml', { opml: await f.text() });
-    toast('Found ' + r.found + ' shows · ' + r.added + ' added');
-    setTab('shows');
-  } catch (e) { say(e.message, 'error'); }
-  finally { $('opml-file').value = ''; }
-};
+$('open-add').onclick = () => openView('add');
 
-// ------------------------------------------------------------------ settings
+// ------------------------------------------------------------------ settings (from the find screen)
 $('open-settings').onclick = async () => {
   try {
     const [s, st] = await Promise.all([api('api/settings'), api('api/status')]);
     state.settings = s;
-    pickOption($('set-cap'), s.storage_cap_mb);
-    pickOption($('set-refresh'), s.refresh_minutes);
-    $('set-auto').checked = s.auto_download;
-    $('set-used').textContent = st.storage_used_mb + ' MB used by ' + st.downloaded + ' downloaded episodes.';
-    WzSheet.open($('settings-sheet'));
+    const opt = (value, label) => new Option(label, value);
+    const cap = el('select', 'wz-field');
+    cap.append(...[[512, '0.5 GB'], [1024, '1 GB'], [2048, '2 GB'], [5120, '5 GB'], [10240, '10 GB'], [20480, '20 GB'], [51200, '50 GB']].map(([v, l]) => opt(v, l)));
+    pick(cap, s.storage_cap_mb, ' MB');
+    const every = el('select', 'wz-field');
+    every.append(...[[30, 'Every 30 minutes'], [60, 'Every hour'], [180, 'Every 3 hours'], [720, 'Twice a day'], [1440, 'Once a day']].map(([v, l]) => opt(v, l)));
+    pick(every, s.refresh_minutes, ' min');
+    const auto = el('input'); auto.type = 'checkbox'; auto.checked = s.auto_download;
+    const save = patch => api('api/settings', patch).then(v => { state.settings = v; }).catch(e => say(e.message, 'error'));
+    cap.onchange = () => save({ storage_cap_mb: +cap.value });
+    every.onchange = () => save({ refresh_minutes: +every.value });
+    auto.onchange = () => save({ auto_download: auto.checked });
+    const used = (st.storage_used_mb / 1024).toFixed(1) + ' GB used';
+    const field = (label, control, note) => { const l = el('label', 'pc-field'); l.append(el('span', '', label), control); if (note) l.append(el('small', '', note)); return l; };
+    const autoRow = el('label', 'pc-sheet-row pc-switch'); autoRow.append(el('span', '', 'Auto-download new shows'), auto);
+    const file = el('input'); file.type = 'file'; file.accept = '.opml,.xml,text/xml,text/x-opml,application/xml'; file.className = 'wz-sr';
+    const imp = el('label', 'pc-sheet-row', 'Import OPML'); imp.append(file);
+    file.onchange = () => importOpml(file);
+    const exp = el('a', 'pc-sheet-row', 'Export OPML'); exp.href = 'api/opml'; exp.download = 'podcasts.opml';
+    const check = sheetRow('Check for new episodes', async () => {
+      check.disabled = true; check.textContent = 'Checking…';
+      try { const r = await api('api/refresh', {}); check.textContent = r.new_episodes ? r.new_episodes + ' new' : 'No new episodes'; }
+      catch (e) { check.textContent = 'Check for new episodes'; say(e.message, 'error'); }
+      finally { check.disabled = false; }
+    });
+    sheet('Settings', field('Storage', cap, used), field('Check feeds', every), autoRow, check, imp, exp);
   } catch (e) { say(e.message, 'error'); }
 };
-function pickOption(select, value) {
-  if (![...select.options].some(o => +o.value === +value)) select.add(new Option(value + (select.id === 'set-cap' ? ' MB' : ' min'), value));
+function pick(select, value, unit) {
+  if (![...select.options].some(o => +o.value === +value)) select.add(new Option(value + unit, value));
   select.value = String(value);
 }
-$('settings-form').onsubmit = async event => {
-  event.preventDefault();
+async function importOpml(input) {
+  const f = input.files[0];
+  if (!f) return;
+  if (f.size > 2 * 1048576) { say('That file is larger than 2 MB.', 'error'); return; }
   try {
-    state.settings = await api('api/settings', { storage_cap_mb: +$('set-cap').value, refresh_minutes: +$('set-refresh').value, auto_download: $('set-auto').checked });
-    WzSheet.close($('settings-sheet'));
-    toast('Settings saved');
-    if (currentView() === 'shows') load('shows');
+    const r = await api('api/opml', { opml: await f.text() });
+    closeSheet();
+    toast(r.added + ' shows added');
   } catch (e) { say(e.message, 'error'); }
-};
-$('refresh-all').onclick = async () => {
-  $('refresh-note').textContent = 'Checking…';
-  try { const r = await api('api/refresh', {}); toast(r.new_episodes ? r.new_episodes + ' new episodes' : 'No new episodes'); load('shows'); }
-  catch (e) { say(e.message, 'error'); }
-};
+  finally { input.value = ''; }
+}
 
 // ------------------------------------------------------------------ player
 function renderSpeeds() {
@@ -705,7 +663,7 @@ async function syncFromServer() {
     if (Math.abs(e.position - audio.currentTime) > 3) {
       if (audio.readyState) audio.currentTime = e.position; else state.pendingSeek = e.position;
       state.savedPos = e.position; state.savedAt = e.position_at;
-      toast('Picked up where you left off on another device · ' + clock(e.position));
+      toast('Picked up where you left off · ' + clock(e.position));
     }
   } catch (_) {}
 }
@@ -729,7 +687,7 @@ function paintPlayer() {
   const dur = duration();
   const playing = !audio.paused;
   $('mini-title').textContent = ep.title;
-  $('mini-sub').textContent = (ep.show_title || '') + (dur ? ' · ' + minutes(dur - pos) + ' left' : '');
+  $('mini-sub').textContent = showName(ep.show_id, ep.show_title) + (dur ? ' · ' + minutes(dur - pos) + ' left' : '');
   art($('mini-art'), ep.artwork);
   $('mini-progress').style.width = dur ? Math.min(100, 100 * pos / dur) + '%' : '0';
   $('mini-toggle').replaceChildren(icon(playing ? 'pause' : 'play'));
@@ -805,10 +763,10 @@ audio.addEventListener('play', () => {
   audio.playbackRate = state.settings.speed;
   if (W && !state.playHold) state.playHold = W.update.hold('Playing a podcast');
   if (W && !state.ducked) { state.ducked = true; W.audio.duck(true); }
-  paintPlayer(); refreshPlayButtons();
+  paintPlayer(); paintEpisodePlay();
 });
 audio.addEventListener('pause', async () => {
-  paintPlayer(); refreshPlayButtons();
+  paintPlayer(); paintEpisodePlay();
   if (W && state.ducked) { state.ducked = false; W.audio.duck(false); }
   await saveProgress(true);
   if (state.playHold && audio.paused) { state.playHold.release(); state.playHold = null; }
@@ -818,35 +776,21 @@ audio.addEventListener('seeked', () => paintPlayer());
 audio.addEventListener('ended', async () => {
   await saveProgress(true, true);
   toast('Finished · marked played');
-  if (currentView() === 'inbox') load('inbox');
+  if (currentView() === 'feed') loadFeed();
 });
 audio.addEventListener('error', () => {
   if (state.current && audio.getAttribute('src')) say('This episode could not be played. Try downloading it first.', 'error');
 });
-function refreshPlayButtons() {
-  for (const li of document.querySelectorAll('.pc-ep[data-id]')) {
-    const b = li.querySelector('.pc-icon-accent');
-    if (!b) continue;
-    const on = state.current?.id === +li.dataset.id && !audio.paused;
-    b.replaceChildren(icon(on ? 'pause' : 'play'));
-  }
-  if (currentView() === 'episode' && state.episode) {
-    const on = state.current?.id === state.episode.id && !audio.paused;
-    const label = on ? 'Pause' : (state.current?.id === state.episode.id ? 'Resume from ' + clock(audio.currentTime) : $('ep-play').textContent);
-    $('ep-play').replaceChildren(icon(on ? 'pause' : 'play'), el('span', '', label));
-  }
-}
 
 $('mini-open').onclick = () => openView('player');
 $('mini-toggle').onclick = togglePlay;
-$('mini-fwd').onclick = () => skip(state.settings.skip_forward);
 $('pl-toggle').onclick = togglePlay;
 $('pl-back').onclick = () => skip(-state.settings.skip_back);
 $('pl-fwd').onclick = () => skip(state.settings.skip_forward);
 $('pl-seek').addEventListener('input', () => { $('pl-pos').textContent = clock(+$('pl-seek').value); });
 $('pl-seek').addEventListener('change', () => { audio.currentTime = +$('pl-seek').value; saveProgress(true); });
 $('pl-show').onclick = () => state.current && openView('show', state.current.show_id);
-$('pl-notes').onclick = () => state.current && openView('episode', state.current.id);
+$('pl-title').onclick = () => state.current && openView('episode', state.current.id);
 $('pl-mark').onclick = async () => {
   const ep = state.current;
   if (!ep) return;
@@ -855,26 +799,23 @@ $('pl-mark').onclick = async () => {
     await api('api/episodes/' + ep.id + '/mark', { played: true });
     const inbox = ep.in_inbox, pos = audio.currentTime;
     unloadPlayer();
-    finish('Marked played', async () => { await api('api/episodes/' + ep.id + '/mark', { played: false, in_inbox: inbox }); await api('api/episodes/' + ep.id + '/progress', { position: pos }); load(currentView(), state.stack.at(-1)?.id); });
+    finish('Marked played', async () => { await api('api/episodes/' + ep.id + '/mark', { played: false, in_inbox: inbox }); await api('api/episodes/' + ep.id + '/progress', { position: pos }); reload(); });
   } catch (e) { say(e.message, 'error'); }
 };
-
-for (const t of document.querySelectorAll('.pc-tab')) t.onclick = () => setTab(t.dataset.tab);
-for (const b of document.querySelectorAll('[data-go]')) b.onclick = () => setTab(b.dataset.go);
 
 // ------------------------------------------------------------------ platform
 if (!W) {
   say('Wizard system functions are unavailable. Open Podcasts through Wizard.', 'error');
 } else {
-  W.ready({ name: 'wizard-podcasts', version: '0.2.3' });
-  // Domain Back: close the nested view (player, episode, show); at a tab root, the core decides.
+  W.ready({ name: 'wizard-podcasts', version: '0.3.0' });
+  // Domain Back: close the nested view (find, show, episode, player); at the feed, the core decides.
   W.back.register({ canGoBack: () => state.stack.length > 0, back: () => popView() });
 }
 document.addEventListener('visibilitychange', async () => {
   if (document.hidden) { beaconProgress(); return; }
   // Back in front: pick up position changes made on another device while paused here.
   if (state.current && audio.paused) { await syncFromServer(); paintPlayer(); }
-  load(currentView(), state.stack.at(-1)?.id);
+  if (currentView() !== 'add') reload();
 });
 window.addEventListener('pagehide', beaconProgress);
 
@@ -882,8 +823,8 @@ window.addEventListener('pagehide', beaconProgress);
   try { state.settings = await api('api/settings'); } catch (_) {}
   const qs = new URLSearchParams(location.search);
   paint();
-  await load('inbox');
+  try { await loadFeed(); } catch (e) { say(e.message, 'error'); }
   if (qs.get('episode')) openView('episode', +qs.get('episode'));
   else if (qs.get('show')) openView('show', +qs.get('show'));
-  else if (qs.get('tab') && ['inbox', 'shows', 'add'].includes(qs.get('tab'))) setTab(qs.get('tab'));
+  else if (qs.get('tab') === 'add') openView('add');
 })();

@@ -231,7 +231,8 @@ def _youtube_result(c, subscribed):
     return {'title': c['title'], 'author': c.get('handle') or 'YouTube', 'feed_url': youtube.channel_url(cid),
             'artwork': c.get('artwork') or '', 'genre': 'YouTube channel', 'subscribers': c.get('subscribers') or None,
             'source': 'youtube', 'channel_id': cid,
-            'subscribed': youtube.feed_url(cid) in subscribed or youtube.channel_feed_url(cid) in subscribed}
+            'subscribed': youtube.feed_url(cid) in subscribed or youtube.channel_feed_url(cid) in subscribed,
+            'show_id': subscribed.get(youtube.feed_url(cid)) or subscribed.get(youtube.channel_feed_url(cid))}
 
 
 def _search_youtube(term, out):
@@ -248,7 +249,7 @@ def search_directory(term, limit=20):
     if len(term) > 200:
         raise Problem(400, 'That search is too long.')
     limit = max(1, min(int(limit or 20), 50))
-    subscribed = {r['feed_url'] for r in q('SELECT feed_url FROM shows')}
+    subscribed = {r['feed_url']: r['id'] for r in q('SELECT id, feed_url FROM shows')}
     if youtube.parse_ref(term) is not None:  # a channel URL or @handle: look that one channel up
         try:
             info = youtube.resolve(term)
@@ -286,7 +287,8 @@ def search_directory(term, limit=20):
                         'author': str(item.get('artistName') or '')[:300], 'feed_url': feed,
                         'artwork': art if isinstance(art, str) and art.startswith('https://') else '',
                         'genre': str(item.get('primaryGenreName') or '')[:80], 'episodes': item.get('trackCount'),
-                        'itunes_id': item.get('collectionId'), 'subscribed': feed in subscribed, 'source': 'rss'})
+                        'itunes_id': item.get('collectionId'), 'subscribed': feed in subscribed,
+                        'show_id': subscribed.get(feed), 'source': 'rss'})
     return {'query': term, 'results': results, 'youtube': youtube_results,
             'source': 'Apple Podcasts directory (iTunes Search API); YouTube channel search'}
 
@@ -681,6 +683,49 @@ def inbox(limit=100, show_id=None, kind=None, state=None, sort=None, since=None)
     return {'continue': [episode_dict(r) for r in cont], 'new': [episode_dict(r) for r in new[:limit]], 'now_playing': np,
             'filter': {'show_id': show_id, 'kind': kind, 'state': state, 'sort': sort, 'since': since},
             'filters': filters}
+
+
+FEED_STATES = ('unplayed', 'started', 'played')
+_FEED_WHERE = {'unplayed': '(e.inbox=1 OR e.position>0) AND e.played=0',
+               'started': 'e.position>0 AND e.played=0',
+               'played': 'e.played=1'}
+
+
+def feed(show_id=None, state=None, sort=None, limit=100, offset=0):
+    """The screen's one list (0.3): episodes from followed shows in publish order, started ones included in place.
+    state 'unplayed' (default: new + started, not finished), 'started' or 'played'; optional show_id; sort 'newest'
+    (default) | 'oldest'; paged with limit/offset. 'shows' lists every followed show, newest episode first."""
+    state = state or 'unplayed'
+    if state not in FEED_STATES:
+        raise Problem(400, "state must be 'unplayed', 'started' or 'played'.")
+    sort = sort or 'newest'
+    if sort not in INBOX_SORTS:
+        raise Problem(400, "sort must be 'newest' or 'oldest'.")
+    if show_id not in (None, ''):
+        try:
+            show_id = int(show_id)
+        except (TypeError, ValueError):
+            raise Problem(400, 'show_id must be a whole number.') from None
+    else:
+        show_id = None
+    limit = max(1, min(int(limit), 500))
+    offset = max(0, int(offset))
+    where, args = _FEED_WHERE[state], []
+    if show_id is not None:
+        where += ' AND e.show_id=?'
+        args.append(show_id)
+    order = 'e.published ASC, e.id ASC' if sort == 'oldest' else 'e.published DESC, e.id DESC'
+    total = q('SELECT COUNT(*) n FROM episodes e WHERE ' + where, args, one=True)['n']
+    rows = q(EP_SELECT + 'WHERE ' + where + ' ORDER BY ' + order + ' LIMIT ? OFFSET ?', args + [limit, offset])
+    waiting = {r['show_id']: r['n'] for r in q('SELECT show_id, COUNT(*) n FROM episodes e WHERE ' + _FEED_WHERE['unplayed'] + ' GROUP BY show_id')}
+    shows = []
+    for s in q('SELECT s.*, (SELECT MAX(published) FROM episodes WHERE show_id=s.id) latest FROM shows s '
+               'ORDER BY latest IS NULL, latest DESC, s.id'):
+        d = show_dict(s)
+        d.update({'short_title': short_title(d['title']), 'latest': s['latest'] or 0, 'unplayed': waiting.get(s['id'], 0)})
+        shows.append(d)
+    return {'episodes': [episode_dict(r) for r in rows], 'total': total, 'offset': offset,
+            'filter': {'show_id': show_id, 'state': state, 'sort': sort}, 'shows': shows, 'now_playing': now_playing()}
 
 
 def now_playing():

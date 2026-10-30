@@ -4,7 +4,7 @@ id: wizard-podcasts
 name: Podcasts
 type: service
 category: app
-version: 0.2.3
+version: 0.3.0
 voice_names: [podcasts, podcast, podcast player]
 summary: Your private podcast player. Follow shows, new episodes download on their own, and your place is saved across devices.
 tags: [audio, learning]
@@ -39,8 +39,8 @@ needs: []
 
 # Podcasts
 
-A private podcast player on your own Wizard. Search the free Apple Podcasts directory or paste any RSS/Atom feed (OPML import and export too). Feeds are checked in the background, new episodes land in **Up next** and download to the app's own storage under a size cap. Your place in every episode is saved on the Wizard, so phone and desktop pick up where the other stopped. Speed 0.8–3×, skip back 15 s / forward 30 s, mark played.
+A private podcast player on your own Wizard. Search the free Apple Podcasts directory or paste any RSS/Atom feed (OPML import and export too). Feeds are checked in the background, new episodes land in your feed and download to the app's own storage under a size cap. Your place in every episode is saved on the Wizard, so phone and desktop pick up where the other stopped. Speed 0.8–3×, skip back 15 s / forward 30 s, mark played.
 
-Podcast episodes always come from each show's public feed enclosure. YouTube channels can be followed as shows too: their long-form uploads arrive as audio only through the YouTube Music app (the `music-source` connector Podcasts uses), with the same Up next, downloads and saved place. Feed, search, artwork and audio requests refuse private, loopback and tailnet addresses; downloads are size-capped; show notes are sanitized.
+Podcast episodes always come from each show's public feed enclosure. YouTube channels can be followed as shows too: their long-form uploads arrive as audio only through the YouTube Music app (the `music-source` connector Podcasts uses), with the same feed, downloads and saved place. Feed, search, artwork and audio requests refuse private, loopback and tailnet addresses; downloads are size-capped; show notes are sanitized.
 
 Agent tools (MCP): `podcasts_status`, `podcasts_search`, `podcasts_subscribe`, `podcasts_list`, `podcasts_episode`, `podcasts_mark`. Transcripts are planned for v2 through the Transcriber app (see README).
