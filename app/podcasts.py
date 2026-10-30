@@ -706,11 +706,11 @@ def start_workers():
 def status():
     s = get_settings()
     r = q("SELECT COUNT(*) n, SUM(download='done') d, SUM(download IN ('queued','downloading')) qd, SUM(download='failed') f, "
-          'SUM(inbox=1 AND played=0) new FROM episodes', one=True)
+          'SUM(inbox=1 AND played=0 AND position=0) new, SUM(position>0 AND played=0) started FROM episodes', one=True)
     shows = q('SELECT COUNT(*) n, SUM(last_error<>\'\') bad FROM shows', one=True)
     used = storage_used()
     return {'app': 'wizard-podcasts', 'ok': True, 'shows': shows['n'] or 0, 'shows_with_errors': shows['bad'] or 0,
-            'episodes': r['n'] or 0, 'new_episodes': r['new'] or 0, 'downloaded': r['d'] or 0,
+            'episodes': r['n'] or 0, 'new_episodes': r['new'] or 0, 'in_progress': r['started'] or 0, 'downloaded': r['d'] or 0,
             'download_queue': r['qd'] or 0, 'download_failures': r['f'] or 0, 'downloading_episode': _state['downloading'],
             'storage_used_mb': round(used / MB, 1), 'storage_cap_mb': s['storage_cap_mb'],
             'refresh_minutes': s['refresh_minutes'], 'last_refresh': _state['last_refresh'], 'refreshing': _state['refreshing'],

@@ -469,6 +469,7 @@ function loadIntoPlayer(ep, autoplay) {
   if (state.current?.id !== ep.id) {
     state.current = ep;
     state.pendingSeek = ep.played ? 0 : ep.position || 0;
+    state.savedAt = ep.position_at || 0;
     audio.src = ep.audio;
     audio.playbackRate = state.settings.speed;
     state.savedPos = state.pendingSeek;
@@ -489,8 +490,24 @@ async function playEpisode(ep) {
 }
 function togglePlay() {
   if (!state.current) return;
-  if (audio.paused) { const p = audio.play(); if (p) p.catch(e => say('Could not start playback: ' + e.message, 'error')); }
-  else audio.pause();
+  if (audio.paused) {
+    // Start inside the tap (mobile browsers need it), then catch up with a newer place saved on another device.
+    const p = audio.play(); if (p) p.catch(e => say('Could not start playback: ' + e.message, 'error'));
+    syncFromServer();
+  } else audio.pause();
+}
+async function syncFromServer() {
+  const ep = state.current;
+  if (!ep) return;
+  try {
+    const e = await api('api/episodes/' + ep.id);
+    if (state.current?.id !== e.id || e.played || e.position_at <= (state.savedAt || 0)) return;
+    if (Math.abs(e.position - audio.currentTime) > 3) {
+      if (audio.readyState) audio.currentTime = e.position; else state.pendingSeek = e.position;
+      state.savedPos = e.position; state.savedAt = e.position_at;
+      toast('Picked up where you left off on another device · ' + clock(e.position));
+    }
+  } catch (_) {}
 }
 function unloadPlayer() {
   audio.pause();
@@ -543,7 +560,7 @@ async function saveProgress(force, completed = false) {
   if (!force && !completed && Math.abs(pos - state.savedPos) < 3) return;
   state.savedPos = pos; state.lastSaved = Date.now();
   const body = { position: pos, duration: duration() || undefined, completed };
-  try { const e = await api('api/episodes/' + ep.id + '/progress', body); if (state.current?.id === e.id) Object.assign(state.current, { position: e.position, played: e.played }); }
+  try { const e = await api('api/episodes/' + ep.id + '/progress', body); state.savedAt = Math.max(state.savedAt || 0, e.position_at); if (state.current?.id === e.id) Object.assign(state.current, { position: e.position, played: e.played }); }
   catch (_) { /* next tick retries */ }
 }
 function beaconProgress() {
@@ -646,19 +663,14 @@ for (const b of document.querySelectorAll('[data-go]')) b.onclick = () => setTab
 if (!W) {
   say('Wizard system functions are unavailable. Open Podcasts through Wizard.', 'error');
 } else {
-  W.ready({ name: 'wizard-podcasts', version: '0.1.0' });
+  W.ready({ name: 'wizard-podcasts', version: '0.1.1' });
   // Domain Back: close the nested view (player, episode, show); at a tab root, the core decides.
   W.back.register({ canGoBack: () => state.stack.length > 0, back: () => popView() });
 }
 document.addEventListener('visibilitychange', async () => {
   if (document.hidden) { beaconProgress(); return; }
   // Back in front: pick up position changes made on another device while paused here.
-  if (state.current && audio.paused) {
-    try {
-      const e = await api('api/episodes/' + state.current.id);
-      if (audio.paused && Math.abs(e.position - audio.currentTime) > 3) { state.current.position = e.position; if (audio.readyState) audio.currentTime = e.position; else state.pendingSeek = e.position; paintPlayer(); }
-    } catch (_) {}
-  }
+  if (state.current && audio.paused) { await syncFromServer(); paintPlayer(); }
   load(currentView(), state.stack.at(-1)?.id);
 });
 window.addEventListener('pagehide', beaconProgress);

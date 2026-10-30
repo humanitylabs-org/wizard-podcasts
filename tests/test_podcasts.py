@@ -16,6 +16,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / 'app'))
 TMP = tempfile.mkdtemp(prefix='podcasts-test-')
 os.environ['DATA_DIR'] = TMP
+os.environ['WIZARD_TRUSTED_HOSTS'] = 'wizard.example:8796,wizard.example'
 
 import feeds  # noqa: E402
 import netfetch  # noqa: E402
@@ -296,6 +297,13 @@ def test_subscribe_download_range_progress_mark_mcp():
     r, _ = req('POST', '/api/refresh', {}, {'Origin': 'https://evil.example'})
     assert r.status == 403
     r, _ = req('GET', '/api/status', headers={'Host': 'evil.example'})
+    assert r.status == 403
+    # a bare trusted name covers every shell port of the owner's Wizard; other names stay refused
+    r, _ = req('GET', '/api/status', headers={'Host': 'wizard.example:8444'})
+    assert r.status == 200
+    r, _ = req('POST', '/api/refresh', {}, {'Host': 'wizard.example:8444', 'Origin': 'https://wizard.example:8444'})
+    assert r.status == 200
+    r, _ = req('GET', '/api/status', headers={'Host': 'wizard.example.evil.example:8444'})
     assert r.status == 403
     # completed playback marks played
     r, body = req('POST', f'/api/episodes/{eid}/progress', {'position': 3700, 'completed': True})

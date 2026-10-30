@@ -24,7 +24,7 @@
 .pc-art-row { width: 52px; height: 52px; }
 .pc-art-lg { width: 112px; height: 112px; }
 .pc-art-tile { width: 100%; height: auto; aspect-ratio: 1; }
-.pc-art-xl { width: min(78vw, 340px, 42vh); height: auto; aspect-ratio: 1; margin: 8px auto 0; box-shadow: 0 10px 40px color-mix(in srgb, var(--wz-base) 55%, transparent); }
+.pc-art-xl { width: min(72vw, 340px, 34vh); height: auto; aspect-ratio: 1; margin: 8px auto 0; box-shadow: 0 10px 40px color-mix(in srgb, var(--wz-base) 55%, transparent); }
 .pc-art-ph { display: grid; place-items: center; font-size: 34px; font-weight: 750; color: var(--ink-2); }
 
 /* episode rows: open (wide) + play + mark played, each a 44px+ target */
@@ -166,3 +166,6 @@ html.wz-hosted .pc-dock { background: color-mix(in srgb, var(--wz-base) 55%, tra
     --wz-surface-raised: color-mix(in srgb, var(--wz-text) 10%, transparent);
   }
 }
+
+.pc-app .wz-more > summary::after { content: ' ▾'; color: var(--ink-3); }
+.pc-app .wz-more[open] > summary::after { content: ' ▴'; }

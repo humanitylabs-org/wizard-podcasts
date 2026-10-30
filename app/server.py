@@ -18,7 +18,7 @@ from podcasts import Problem  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 APP_ID = 'wizard-podcasts'
-VERSION = '0.1.0'
+VERSION = '0.1.1'
 PORT = int(os.environ.get('PORT', '9207'))
 PREFIX = '/' + APP_ID
 STATIC_TYPES = {'.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8',
@@ -34,6 +34,9 @@ def _csv(name):
 # loopback and the in-network app name stay trusted so the agent's MCP route always works.
 _LOCAL = {f'127.0.0.1:{PORT}', f'localhost:{PORT}', f'{APP_ID}:{PORT}', APP_ID}
 TRUSTED_HOSTS = _csv('WIZARD_TRUSTED_HOSTS') | _LOCAL
+# A bare host name (no port) trusts that exact name on any port: the owner's Wizard serves the same app through
+# several shell ports (e.g. 8444 phone shell, 8796 gateway) and the installer may list only one of them.
+TRUSTED_NAMES = {h for h in TRUSTED_HOSTS if ':' not in h}
 TRUSTED_ORIGINS = _csv('WIZARD_TRUSTED_ORIGINS') | {'http://' + h for h in _LOCAL}
 FRAME_ANCESTORS = ' '.join(["'self'"] + sorted(o for o in TRUSTED_ORIGINS if o.startswith('https://')))
 CSP = ("default-src 'self'; img-src 'self' data: https://*.mzstatic.com; media-src 'self'; connect-src 'self'; "
@@ -147,7 +150,8 @@ class Handler(BaseHTTPRequestHandler):
         return (self.headers.get('Sec-Fetch-Site') or '') != 'cross-site'
 
     def refused(self, write=False):
-        if (self.headers.get('Host') or '').lower() not in TRUSTED_HOSTS:
+        host = (self.headers.get('Host') or '').lower()
+        if host not in TRUSTED_HOSTS and host.rsplit(':', 1)[0] not in TRUSTED_NAMES:
             self.send(403, {'error': 'Unknown host.'})
             return True
         if write and not self._origin_ok():

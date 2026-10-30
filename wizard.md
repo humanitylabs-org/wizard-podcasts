@@ -4,7 +4,7 @@ id: wizard-podcasts
 name: Podcasts
 type: service
 category: app
-version: 0.1.0
+version: 0.1.1
 voice_names: [podcasts, podcast, podcast player]
 summary: Your private podcast player. Follow shows, new episodes download on their own, and your place is saved across devices.
 tags: [audio, learning]
