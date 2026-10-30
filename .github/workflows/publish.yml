@@ -18,8 +18,12 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-      - name: Only list a recipe whose image is pinned by digest
-        run: grep -q '@sha256:' runtipi/docker-compose.yml
+        with: {fetch-depth: 0}
+      - name: Only list a recipe whose pinned image was built from the current app code
+        run: |
+          grep -q '@sha256:' runtipi/docker-compose.yml
+          pinned=$(grep -oE 'wizard-podcasts:sha-[0-9a-f]{40}' runtipi/docker-compose.yml | cut -d- -f3)
+          git diff --quiet "$pinned" HEAD -- app web icon.png || { echo "runtipi/docker-compose.yml pins $pinned but app code changed since; pin the new image first"; exit 1; }
       - name: Publish to the Wizard app index
         run: |
           curl -sS --fail-with-body -X POST https://apps.aiwizards.com/v1/publish \
