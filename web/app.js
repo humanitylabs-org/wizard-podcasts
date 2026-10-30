@@ -470,6 +470,7 @@ function loadIntoPlayer(ep, autoplay) {
     state.current = ep;
     state.pendingSeek = ep.played ? 0 : ep.position || 0;
     state.savedAt = ep.position_at || 0;
+    state.touched = false;  // a page that only shows this episode never overwrites a place saved elsewhere
     audio.src = ep.audio;
     audio.playbackRate = state.settings.speed;
     state.savedPos = state.pendingSeek;
@@ -555,7 +556,7 @@ function renderPlayer() {
 }
 async function saveProgress(force, completed = false) {
   const ep = state.current;
-  if (!ep || (!audio.readyState && !completed)) return;
+  if (!ep || !state.touched || (!audio.readyState && !completed)) return;
   const pos = Math.floor(audio.currentTime * 10) / 10;
   if (!force && !completed && Math.abs(pos - state.savedPos) < 3) return;
   state.savedPos = pos; state.lastSaved = Date.now();
@@ -565,7 +566,7 @@ async function saveProgress(force, completed = false) {
 }
 function beaconProgress() {
   const ep = state.current;
-  if (!ep || !audio.readyState) return;
+  if (!ep || !state.touched || !audio.readyState) return;
   // keepalive lets the save finish while the page is being hidden or closed.
   const body = JSON.stringify({ position: Math.floor(audio.currentTime), duration: duration() || undefined });
   state.savedPos = audio.currentTime;
@@ -600,6 +601,7 @@ audio.addEventListener('timeupdate', () => {
   if (Date.now() - state.lastSaved > 10000) saveProgress(false);
 });
 audio.addEventListener('play', () => {
+  state.touched = true;
   audio.playbackRate = state.settings.speed;
   if (W && !state.playHold) state.playHold = W.update.hold('Playing a podcast');
   if (W && !state.ducked) { state.ducked = true; W.audio.duck(true); }
@@ -611,7 +613,8 @@ audio.addEventListener('pause', async () => {
   await saveProgress(true);
   if (state.playHold && audio.paused) { state.playHold.release(); state.playHold = null; }
 });
-audio.addEventListener('seeked', () => { paintPlayer(); saveProgress(true); });
+// Seeks the owner makes (slider, skip, lock screen) save explicitly; restoring a saved place must not write it back.
+audio.addEventListener('seeked', () => paintPlayer());
 audio.addEventListener('ended', async () => {
   await saveProgress(true, true);
   toast('Finished · marked played');
@@ -663,7 +666,7 @@ for (const b of document.querySelectorAll('[data-go]')) b.onclick = () => setTab
 if (!W) {
   say('Wizard system functions are unavailable. Open Podcasts through Wizard.', 'error');
 } else {
-  W.ready({ name: 'wizard-podcasts', version: '0.1.1' });
+  W.ready({ name: 'wizard-podcasts', version: '0.1.2' });
   // Domain Back: close the nested view (player, episode, show); at a tab root, the core decides.
   W.back.register({ canGoBack: () => state.stack.length > 0, back: () => popView() });
 }
