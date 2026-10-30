@@ -12,7 +12,7 @@ Base: the app root (`/` on port 9207, or `/wizard-podcasts/` through the Wizard 
 | GET | `/api/shows` | `{shows: [show]}` with `episodes`, `unplayed`, `new`, `downloaded` counts |
 | GET | `/api/shows/{id}?limit=&offset=` | `{show, episodes: [episode]}` newest first |
 | GET | `/api/shows/{id}/art` | cached artwork image |
-| GET | `/api/inbox` | Up next: `{continue: [episode], new: [episode], now_playing}` |
+| GET | `/api/inbox?show_id=&kind=&state=&limit=` | Up next: `{continue: [episode], new: [episode], now_playing, filter, filters}`. All query values are optional and combine: `show_id` (one show), `kind` `podcast`\|`youtube` (`rss` = `podcast`), `state` `started` (Continue only) \|`unplayed` (New only), `limit` caps `new` (default 100, max 500). `filter` echoes what was applied. `filters` always describes the whole, unfiltered Up next: `{shows: [{id, title, short_title, kind, artwork, unplayed, started, latest}] (newest episode first), kinds: {podcast, youtube}, started, unplayed, total}`. A bad value is a 400. The MCP tool `podcasts_list` takes the same `show_id`/`kind`/`state` with `view: "inbox"`. |
 | GET | `/api/episodes/{id}` | full episode (see fields below) |
 | GET/HEAD | `/api/episodes/{id}/audio` | audio with **HTTP Range** (206 + `Content-Range`); local file when downloaded, otherwise the public enclosure streamed through the guarded fetcher |
 | GET | `/api/settings` | `{storage_cap_mb, refresh_minutes, auto_download, speed, skip_back, skip_forward}` |

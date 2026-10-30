@@ -174,3 +174,35 @@ html.wz-hosted .pc-dock { background: color-mix(in srgb, var(--wz-base) 55%, tra
 .pc-yt { display: inline-flex; align-self: flex-start; width: max-content; padding: 1px 7px; border-radius: var(--r-pill); background: var(--fill); color: var(--ink-2); font-size: 11px; font-weight: 650; letter-spacing: .01em; line-height: 1.5; }
 .pc-yt[hidden] { display: none; }
 .pc-result-h { list-style: none; padding: 14px 4px 4px; font-size: 13px; font-weight: 650; color: var(--ink-3); }
+
+/* Up next filters: one scrolling row of show chips (All first), then optional type / progress toggles.
+ * Every chip is a 44px target; the chosen one takes the accent. Kit colours only. */
+.pc-filters { display: grid; gap: 6px; padding: 6px 0 4px; }
+.pc-filters[hidden], .pc-chips-more[hidden], .pc-seg[hidden] { display: none; }
+.pc-chips { display: flex; gap: 8px; overflow-x: auto; overscroll-behavior-x: contain; scroll-padding: 0 12px; padding: 2px 4px 4px; scrollbar-width: none; -webkit-overflow-scrolling: touch; }
+.pc-chips::-webkit-scrollbar { display: none; }
+@media (hover: hover) { .pc-chips { scrollbar-width: thin; scrollbar-color: var(--line-2) transparent; } }
+.pc-chip { flex: none; display: inline-flex; align-items: center; gap: 8px; min-height: 44px; max-width: 220px; padding: 4px 12px 4px 4px; border-radius: var(--r-pill);
+  background: var(--fill); border: 1px solid var(--line); color: var(--ink); font-size: var(--wz-text-md, .875rem); font-weight: 650; white-space: nowrap; }
+.pc-chip-all { padding: 4px 18px; }
+.pc-chip-art { flex: none; width: 34px; height: 34px; border-radius: 50%; object-fit: cover; background: var(--solid-2); }
+.pc-chip-ph { display: grid; place-items: center; font-size: var(--wz-text-md, .875rem); font-weight: 750; color: var(--ink-2); }
+.pc-chip-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.pc-chip-n { flex: none; min-width: 22px; padding: 0 6px; border-radius: var(--r-pill); background: var(--fill-2); color: var(--ink-2); font-size: .75rem; line-height: 20px; font-weight: 750; text-align: center; font-variant-numeric: tabular-nums; }
+.pc-chip:active { transform: scale(.97); }
+@media (hover: hover) { .pc-chip:hover { border-color: var(--line-2); } }
+.pc-chip[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+.pc-chip[aria-pressed="true"] .pc-chip-n { background: color-mix(in srgb, var(--on-accent) 18%, transparent); color: var(--on-accent); }
+.pc-chips-more { display: flex; flex-wrap: wrap; gap: 8px; padding: 0 4px 2px; }
+.pc-seg { display: inline-flex; padding: 0; border-radius: var(--r-pill); background: var(--fill); border: 1px solid var(--line); }
+.pc-seg-b { min-height: 44px; min-width: 44px; padding: 0 14px; border-radius: var(--r-pill); color: var(--ink-2); font-size: var(--wz-text-md, .875rem); font-weight: 650; }
+.pc-seg-b[hidden] { display: none; }
+.pc-seg-b[aria-pressed="true"] { background: color-mix(in srgb, var(--accent) 22%, transparent); color: var(--ink); box-shadow: inset 0 0 0 1px var(--accent); }
+@media (hover: hover) { .pc-seg-b:hover { color: var(--ink); } }
+.pc-none { padding-top: 28px; }
+/* phone widths: the two toggles share one line instead of stacking */
+@container wz-app (max-width: 599px) {
+  .pc-chips-more { flex-wrap: nowrap; }
+  .pc-seg { flex: 1 1 auto; }
+  .pc-seg-b { flex: 1 1 auto; padding: 0 6px; font-size: var(--wz-text-sm, .8125rem); white-space: nowrap; }
+}

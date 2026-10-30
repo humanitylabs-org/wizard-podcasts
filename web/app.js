@@ -163,7 +163,7 @@ function finish(message, undo) {
 
 async function load(view, id) {
   try {
-    if (view === 'inbox') return renderInbox(await api('api/inbox'));
+    if (view === 'inbox') return renderInbox(await api(inboxPath()));
     if (view === 'shows') return renderShows(await api('api/shows'));
     if (view === 'add') return setTimeout(() => $('search-input').focus({ preventScroll: true }), 50);
     if (view === 'show') return renderShow(await api('api/shows/' + id + '?limit=50'));
@@ -223,16 +223,126 @@ function pollIfBusy(list) {
     pollTimer = setTimeout(() => { if (!document.hidden) load(currentView(), state.stack.at(-1)?.id); }, 4000);
   }
 }
+// Up next filter: one show, one kind (podcast | youtube) and/or one progress state (unplayed | started).
+// Remembered on this device only; the server filters (GET api/inbox?show_id=&kind=&state=).
+const FILTER_KEY = 'wizard-podcasts.upnext-filter';
+const filter = (() => {
+  try {
+    const f = JSON.parse(localStorage.getItem(FILTER_KEY) || '{}');
+    return { show: Number.isInteger(f.show) ? f.show : null, kind: ['podcast', 'youtube'].includes(f.kind) ? f.kind : null,
+      state: ['unplayed', 'started'].includes(f.state) ? f.state : null };
+  } catch (_) { return { show: null, kind: null, state: null }; }
+})();
+function saveFilter() {
+  try { localStorage.setItem(FILTER_KEY, JSON.stringify(filter)); } catch (_) {}
+}
+function inboxPath() {
+  const qs = new URLSearchParams();
+  if (filter.show != null) qs.set('show_id', filter.show);
+  if (filter.kind) qs.set('kind', filter.kind);
+  if (filter.state) qs.set('state', filter.state);
+  const t = qs.toString();
+  return 'api/inbox' + (t ? '?' + t : '');
+}
+function setFilter(change) {
+  Object.assign(filter, change);
+  saveFilter();
+  load('inbox');
+}
+function filtering() { return filter.show != null || !!filter.kind || !!filter.state; }
+
+let chipSig = '', chipKind = null;
+function chip(label, opts) {
+  const b = el('button', 'pc-chip' + (opts.all ? ' pc-chip-all' : ''));
+  b.type = 'button';
+  if (opts.show) {
+    const s = opts.show;
+    if (s.artwork) { const img = el('img', 'pc-chip-art'); img.alt = ''; img.loading = 'lazy'; img.src = s.artwork; b.append(img); }
+    else { const ph = el('span', 'pc-chip-art pc-chip-ph', (s.short_title || s.title || '?').slice(0, 1)); ph.setAttribute('aria-hidden', 'true'); b.append(ph); }
+    b.dataset.show = s.id;
+    b.title = s.title;
+    b.setAttribute('aria-label', s.title + ', ' + s.unplayed + ' in Up next');
+  } else b.dataset.all = '1';
+  b.append(el('span', 'pc-chip-name', label));
+  if (opts.show) b.append(el('span', 'pc-chip-n', String(opts.show.unplayed)));
+  b.onclick = opts.onclick;
+  return b;
+}
+function renderFilters(f) {
+  const box = $('inbox-filters');
+  const shows = (f.shows || []).filter(s => !filter.kind || s.kind === filter.kind);
+  const bothKinds = f.kinds && f.kinds.podcast > 0 && f.kinds.youtube > 0;
+  const bothStates = f.started > 0 && f.unplayed > 0;
+  box.hidden = !f.total || ((f.shows || []).length < 2 && !bothKinds && !bothStates && !filtering());
+  if (box.hidden) return;
+  // Rebuild the chip row only when its content changes, so polling during downloads keeps its scroll place.
+  const sig = JSON.stringify([shows.map(s => [s.id, s.unplayed, s.short_title, s.artwork]), filter.show]);
+  const row = $('chips-shows');
+  if (sig !== chipSig) {
+    const sameSet = chipKind === filter.kind;
+    chipSig = sig; chipKind = filter.kind;
+    const left = sameSet ? row.scrollLeft : 0;
+    row.replaceChildren(
+      chip('All', { all: true, onclick: () => setFilter({ show: null, kind: null, state: null }) }),
+      ...shows.map(s => chip(s.short_title || s.title, { show: s, onclick: () => setFilter({ show: filter.show === s.id ? null : s.id }) })));
+    row.scrollLeft = left;
+  }
+  for (const b of row.children) b.setAttribute('aria-pressed', String(b.dataset.all ? !filtering() : +b.dataset.show === filter.show));
+  $('seg-kind').hidden = !bothKinds && !filter.kind;
+  $('seg-state').hidden = !bothStates && !filter.state;
+  $('chips-more').hidden = $('seg-kind').hidden && $('seg-state').hidden;
+  for (const b of $('seg-kind').children) b.setAttribute('aria-pressed', String(b.dataset.kind === filter.kind));
+  for (const b of $('seg-state').children) b.setAttribute('aria-pressed', String(b.dataset.state === filter.state));
+}
+for (const b of document.querySelectorAll('#seg-kind .pc-seg-b')) {
+  b.onclick = () => {
+    const kind = filter.kind === b.dataset.kind ? null : b.dataset.kind;
+    const shown = (lastFilters?.shows || []).find(s => s.id === filter.show);
+    setFilter({ kind, show: kind && shown && shown.kind !== kind ? null : filter.show });
+  };
+}
+for (const b of document.querySelectorAll('#seg-state .pc-seg-b')) b.onclick = () => setFilter({ state: filter.state === b.dataset.state ? null : b.dataset.state });
+$('filter-clear').onclick = () => setFilter({ show: null, kind: null, state: null });
+// A mouse wheel scrolls the chip row sideways on desktop.
+$('chips-shows').addEventListener('wheel', e => {
+  const row = $('chips-shows');
+  if (Math.abs(e.deltaY) > Math.abs(e.deltaX) && row.scrollWidth > row.clientWidth) { row.scrollLeft += e.deltaY; e.preventDefault(); }
+}, { passive: false });
+function revealChosenChip() {
+  const on = $('chips-shows').querySelector('.pc-chip[aria-pressed="true"][data-show]');
+  if (on) on.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+}
+
+let lastFilters = null, inboxReload = 0;
 function renderInbox(data) {
+  const f = data.filters || { shows: [], kinds: {}, started: 0, unplayed: 0, total: (data.continue || []).length + (data.new || []).length };
+  lastFilters = f;
+  // A remembered show that has nothing left in Up next falls back to All.
+  if (filter.show != null && !(f.shows || []).some(s => s.id === filter.show)) { filter.show = null; saveFilter(); return load('inbox'); }
+  const firstPaint = !chipSig;
+  renderFilters(f);
+  if (firstPaint) revealChosenChip();
   const cont = data.continue || [], fresh = data.new || [];
-  $('list-continue').replaceChildren(...cont.map(e => episodeRow(e)));
-  const recount = () => { const n = $('list-new').children.length; $('new-count').textContent = n; $('inbox-new').hidden = !n; badge(n); emptyCheck(); };
-  $('list-new').replaceChildren(...fresh.map(e => episodeRow(e, { onDone: recount })));
+  const emptyCheck = () => {
+    const any = !!($('list-continue').children.length || $('list-new').children.length);
+    $('inbox-empty').hidden = any || filtering() && f.total > 0;
+    $('inbox-none').hidden = any || !filtering() || !f.total;
+  };
+  const onDone = () => {
+    $('new-count').textContent = $('list-new').children.length;
+    $('inbox-new').hidden = !$('list-new').children.length;
+    $('inbox-continue').hidden = !$('list-continue').children.length;
+    emptyCheck();
+    // counts on the chips and the tab badge come from the server
+    clearTimeout(inboxReload);
+    inboxReload = setTimeout(() => { if (currentView() === 'inbox') load('inbox'); }, 600);
+  };
+  $('list-continue').replaceChildren(...cont.map(e => episodeRow(e, { onDone })));
+  $('list-new').replaceChildren(...fresh.map(e => episodeRow(e, { onDone })));
   $('inbox-continue').hidden = !cont.length;
   $('inbox-new').hidden = !fresh.length;
   $('new-count').textContent = fresh.length;
-  badge(fresh.length);
-  const emptyCheck = () => { $('inbox-empty').hidden = !!($('list-continue').children.length || $('list-new').children.length); };
+  badge(data.filters ? f.unplayed : fresh.length);
   emptyCheck();
   if (data.now_playing && !state.current) loadIntoPlayer(data.now_playing, false);
   pollIfBusy(cont.concat(fresh));
@@ -685,7 +795,7 @@ for (const b of document.querySelectorAll('[data-go]')) b.onclick = () => setTab
 if (!W) {
   say('Wizard system functions are unavailable. Open Podcasts through Wizard.', 'error');
 } else {
-  W.ready({ name: 'wizard-podcasts', version: '0.1.2' });
+  W.ready({ name: 'wizard-podcasts', version: '0.2.1' });
   // Domain Back: close the nested view (player, episode, show); at a tab root, the core decides.
   W.back.register({ canGoBack: () => state.stack.length > 0, back: () => popView() });
 }

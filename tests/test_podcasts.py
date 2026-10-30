@@ -655,3 +655,93 @@ def test_youtube_channel_subscribe_download_play_and_degrade(connector):
     assert wait_for(lambda: 'YouTube Music app' in (_ep(other['id'])['download']['error'] or ''))
     assert json.loads(req('GET', '/api/status')[1])['youtube']['installed'] is False
     assert req('POST', f'/api/shows/{sid}/unsubscribe', {}, origin)[0].status == 200
+
+
+
+# ------------------------------------------------------------------ Up next filters (0.2.1)
+
+def test_short_title():
+    assert P.short_title('The Tucker Carlson Show') == 'Tucker Carlson'
+    assert P.short_title('Joe Armstrong - AI & Automation') == 'Joe Armstrong'
+    assert P.short_title('The Jordan B. Peterson Podcast') == 'Jordan B. Peterson'
+    assert P.short_title('Diggnation (Rebooted)') == 'Diggnation'
+    assert P.short_title('Naval') == 'Naval'
+    assert P.short_title('Podcast') == 'Podcast' and P.short_title('') == ''
+
+
+def test_inbox_filters_by_show_kind_and_state():
+    import youtube
+    now = int(time.time())
+    t0 = now + 10 ** 7  # newer than anything else in the shared test database
+
+    def seed(c):
+        ids = []
+        for url, title in (('https://feeds.example.com/f-a.xml', 'The Alpha Show'), ('https://feeds.example.com/f-b.xml', 'Beta Podcast'),
+                           (youtube.feed_url('UCfilterfilterfilterfilt'), 'Gamma Channel')):
+            ids.append(c.execute('INSERT INTO shows (feed_url, title, added_at, last_checked) VALUES (?,?,?,?)', (url, title, now, now)).lastrowid)
+        a, b, y = ids
+        rows = [(a, 'a1', t0 + 1, 1, 0), (a, 'a2', t0 + 2, 1, 0), (a, 'a3', t0 + 3, 0, 120),  # a3 started (Continue)
+                (b, 'b1', t0 + 50, 1, 0), (y, 'y1', t0 + 20, 1, 0), (a, 'a0', t0 + 99, 0, 0)]   # a0 not in Up next
+        for sid, guid, pub, ib, pos in rows:
+            c.execute('INSERT INTO episodes (show_id, guid, title, published, enclosure_url, first_seen, inbox, position, position_at) '
+                      'VALUES (?,?,?,?,?,?,?,?,?)', (sid, guid, guid, pub, 'https://cdn.example.com/' + guid + '.mp3', now, ib, pos, now if pos else 0))
+        return ids
+    a, b, y = P.write(seed)
+    try:
+        def get(qs=''):
+            r, body = req('GET', '/api/inbox' + qs)
+            return r.status, json.loads(body)
+
+        def titles(d):
+            return sorted(e['title'] for e in d['continue'] + d['new'])
+
+        st, full = get()
+        assert st == 200 and full['filter'] == {'show_id': None, 'kind': None, 'state': None}
+        chips = full['filters']['shows']
+        ours = [c for c in chips if c['id'] in (a, b, y)]
+        # newest episode first: Beta (t0+50), Gamma (t0+20), Alpha (t0+3); a0 is not in Up next so does not count
+        assert [c['id'] for c in ours] == [b, y, a] and chips[:3] == ours
+        alpha = ours[2]
+        assert alpha['unplayed'] == 3 and alpha['started'] == 1 and alpha['short_title'] == 'Alpha' and alpha['kind'] == 'podcast'
+        assert ours[1]['kind'] == 'youtube' and ours[1]['unplayed'] == 1 and ours[0]['short_title'] == 'Beta'
+        assert full['filters']['kinds']['youtube'] >= 1 and full['filters']['total'] == len(full['continue']) + len(full['new'])
+        # one show: only its episodes, both sections; facets stay unfiltered
+        st, d = get(f'?show_id={a}')
+        assert st == 200 and titles(d) == ['a1', 'a2', 'a3'] and [e['title'] for e in d['continue']] == ['a3']
+        assert {e['show_id'] for e in d['continue'] + d['new']} == {a} and d['filters'] == full['filters'] and d['filter']['show_id'] == a
+        # through the gateway prefix too
+        r, body = req('GET', f'/wizard-podcasts/api/inbox?show_id={b}')
+        assert r.status == 200 and titles(json.loads(body)) == ['b1']
+        # kind
+        st, d = get('?kind=youtube')
+        assert st == 200 and 'y1' in titles(d) and all(e['show_id'] != a and e['show_id'] != b for e in d['continue'] + d['new'])
+        st, d = get('?kind=podcast')
+        assert {'a1', 'a2', 'a3', 'b1'} <= set(titles(d)) and 'y1' not in titles(d)
+        assert get('?kind=rss')[1]['filter']['kind'] == 'podcast'
+        # state, and filters combine
+        st, d = get(f'?show_id={a}&state=started')
+        assert titles(d) == ['a3'] and d['new'] == []
+        st, d = get(f'?show_id={a}&state=unplayed')
+        assert titles(d) == ['a1', 'a2'] and d['continue'] == []
+        st, d = get(f'?show_id={a}&kind=youtube')
+        assert titles(d) == []
+        # bad input is a 400 with a message, never a 500
+        for qs in ('?show_id=x', '?kind=video', '?state=done', '?limit=x'):
+            st, d = get(qs)
+            assert st == 400 and d['error'], qs
+        # the same filter through MCP podcasts_list
+        def mcp(args):
+            r, body = req('POST', '/mcp', {'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call', 'params': {'name': 'podcasts_list', 'arguments': args}})
+            return json.loads(body)['result']
+        tools = json.loads(req('POST', '/mcp', {'jsonrpc': '2.0', 'id': 1, 'method': 'tools/list'})[1])['result']['tools']
+        props = [t for t in tools if t['name'] == 'podcasts_list'][0]['inputSchema']['properties']
+        assert props['kind']['enum'] == ['podcast', 'youtube'] and props['state']['enum'] == ['started', 'unplayed']
+        sc = mcp({'view': 'inbox', 'show_id': a})['structuredContent']
+        assert titles(sc) == ['a1', 'a2', 'a3'] and sc['filters']['shows'][0]['id'] == b
+        assert titles(mcp({'view': 'inbox', 'kind': 'youtube', 'show_id': y})['structuredContent']) == ['y1']
+        assert titles(mcp({'view': 'inbox', 'show_id': a, 'state': 'started'})['structuredContent']) == ['a3']
+        assert mcp({'view': 'inbox', 'kind': 'video'})['isError'] is True
+        # without view, show_id still lists that show's episodes (unchanged)
+        assert len(mcp({'show_id': a})['structuredContent']['episodes']) == 4
+    finally:
+        P.write(lambda c: [c.execute('DELETE FROM episodes WHERE show_id=?', (i,)) or c.execute('DELETE FROM shows WHERE id=?', (i,)) for i in (a, b, y)])
