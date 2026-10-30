@@ -866,7 +866,7 @@ for (const b of document.querySelectorAll('[data-go]')) b.onclick = () => setTab
 if (!W) {
   say('Wizard system functions are unavailable. Open Podcasts through Wizard.', 'error');
 } else {
-  W.ready({ name: 'wizard-podcasts', version: '0.2.2' });
+  W.ready({ name: 'wizard-podcasts', version: '0.2.3' });
   // Domain Back: close the nested view (player, episode, show); at a tab root, the core decides.
   W.back.register({ canGoBack: () => state.stack.length > 0, back: () => popView() });
 }
