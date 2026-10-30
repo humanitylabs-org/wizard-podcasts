@@ -1,0 +1,6 @@
+{
+  "request": "Build me a private podcast player: subscribe, auto-download, resume, speed",
+  "template": "hello-wizard",
+  "state": "local_draft",
+  "name": "Podcasts"
+}

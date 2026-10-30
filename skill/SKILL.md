@@ -1,0 +1,23 @@
+---
+name: wizard-podcasts
+description: Use when the owner asks about podcasts - following a show, new episodes, what he was listening to, or episode notes.
+version: 0.1.0
+author: Humanity Labs
+license: GPL-3.0-only
+platforms: [linux, macos]
+metadata:
+  hermes:
+    tags: [podcasts, audio]
+    related_skills: []
+---
+# Podcasts
+
+The owner's private podcast player (app id `wizard-podcasts`). Use its MCP tools; never fetch feeds yourself.
+
+- `podcasts_status` first: shows, new episodes, download queue/failures, storage used vs cap, what is playing and where.
+- Follow a show: `podcasts_search` with its name, pick the matching result (title + author), then `podcasts_subscribe` with that result's `feed_url`. A pasted RSS/Atom address goes straight to `podcasts_subscribe`. Idempotent. Only public feed enclosures are used.
+- `podcasts_list` with `view: "inbox"` is Up next (`continue` = started, `new` = unplayed new). No arguments lists shows; `show_id` lists that show's episodes newest first.
+- `podcasts_episode` returns show notes (`notes_text`), saved `position` in seconds, `duration`, `download.state`, and `file` (path relative to the Podcasts app data folder once downloaded). `transcript` is `not_available` in v1; `feed_transcript_url` is the publisher's own transcript link when the feed has one.
+- `podcasts_mark` with `played: true|false` (optional `in_inbox`). Read the returned episode to confirm.
+
+Playback happens in the Podcasts screen (`?episode=<id>` opens one episode). You cannot start audio on the owner's device. Downloads and new-episode checks run in the background on their own. If a tool returns an error, report it as written; never claim a show was followed or an episode marked without the returned readback.

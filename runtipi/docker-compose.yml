@@ -1,0 +1,24 @@
+services:
+  wizard-podcasts:
+    image: ghcr.io/humanitylabs-org/wizard-podcasts:local
+    restart: unless-stopped
+    user: 1000:1000
+    cap_drop: [ALL]
+    security_opt: ['no-new-privileges:true']
+    read_only: true
+    tmpfs: [/tmp]
+    mem_limit: 256m
+    environment:
+      PORT: '9207'
+      DATA_DIR: /data
+      WIZARD_TRUSTED_HOSTS: ${WIZARD_TRUSTED_HOSTS:-}
+      WIZARD_TRUSTED_ORIGINS: ${WIZARD_TRUSTED_ORIGINS:-}
+    volumes:
+      - ${APP_DATA_DIR}/data:/data
+    ports: ['127.0.0.1:${APP_PORT:-9207}:9207']
+    x-runtipi:
+      is_main: true
+      internal_port: 9207
+x-runtipi:
+  schema_version: 2
+  overrides: []

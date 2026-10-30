@@ -1,0 +1,26 @@
+name: publish
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - run: pip install pytest && python -m pytest -q tests
+  publish:
+    needs: test
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Only list a recipe whose image is pinned by digest
+        run: grep -q '@sha256:' runtipi/docker-compose.yml
+      - name: Publish to the Wizard app index
+        run: |
+          curl -sS --fail-with-body -X POST https://apps.aiwizards.com/v1/publish \
+            -H 'content-type: application/json' -d "{\"repo\":\"${{ github.repository }}\"}"

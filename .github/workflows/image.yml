@@ -1,0 +1,24 @@
+name: app-image
+on:
+  push:
+    branches: [main]
+    paths-ignore: [wizard.md, runtipi/docker-compose.yml, runtipi/config.json, README.md, API.md, skill/SKILL.md]
+  workflow_dispatch: {}
+permissions:
+  contents: read
+  packages: write
+jobs:
+  tests:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - run: pip install pytest && python -m pytest -q tests && python app/build_view.py
+  image:
+    needs: tests
+    uses: humanitylabs-org/wizard-app-index/.github/workflows/app-image.yml@main
+    with:
+      context: .
+      dockerfile: app/Dockerfile
+      image: ghcr.io/humanitylabs-org/wizard-podcasts
