@@ -434,8 +434,9 @@ function followRow(s) {
   const li = el('li', 'pc-ep pc-show-row' + (s.followed ? '' : ' pc-played'));
   const open = el('button', 'wz-row pc-ep-open');
   open.type = 'button';
-  const img = el('img', 'pc-art pc-art-row'); img.alt = ''; img.loading = 'lazy';
-  art(img, s.artwork);
+  let img;
+  if (s.artwork) { img = el('img', 'pc-art pc-art-row'); img.alt = ''; img.loading = 'lazy'; img.src = s.artwork; }
+  else { img = el('span', 'pc-art pc-art-row pc-chip-ph', (s.title || '?').slice(0, 1)); img.setAttribute('aria-hidden', 'true'); }
   const main = el('span', 'wz-main');
   const meta = el('small', 'pc-meta');
   meta.append(el('span', 'pc-meta-when', s.latest ? posted(s.latest) : ''));

@@ -76,12 +76,16 @@ class FakeResp:
 
 FEEDS = {}
 PAGES = {}
+FLAKY = {}  # url -> number of 500 answers before the real one
 
 
 def fake_open(url, headers=None, timeout=20, method='GET', allow=None):
     netfetch.check_url(url)
     if allow is not None:
         assert allow(netfetch.urlsplit(url).hostname), url
+    if FLAKY.get(url, 0) > 0:
+        FLAKY[url] -= 1
+        return FakeResp(500, b'', {}, url)
     if url in PAGES:
         return FakeResp(200, PAGES[url], {'Content-Type': 'text/html'}, url)
     if url in FEEDS:
@@ -118,6 +122,7 @@ def server():
     os.environ['PORT'] = str(port)
     import server as S
     S.netfetch.open_url = fake_open
+    P.YOUTUBE_RETRY_SECONDS = 0
     P.init()
     P.start_workers()
     srv = S.Server(('127.0.0.1', port), S.Handler)
@@ -1036,3 +1041,17 @@ def test_view_has_skip_and_shows_list():
     assert '.pc-skip' in css and 'min-width: 700px' in css
     # no Podcasts/YouTube filter or kind label on the screen
     assert 'YouTube' not in html and "kind" not in js.split('function feedPath')[1].split('}')[0]
+
+
+def test_youtube_follow_survives_a_flaky_feed_answer(connector):
+    cid = 'UC' + 'f' * 21 + 'Q'
+    PAGES['https://www.youtube.com/@flakychan'] = YT_PAGE.replace(CID.encode(), cid.encode())
+    FEEDS[youtube.feed_url(cid)] = YT_FEED.replace(CID[2:].encode(), cid[2:].encode()).replace(CID.encode(), cid.encode())
+    FLAKY[youtube.feed_url(cid)] = 1
+    r, body = req('POST', '/api/subscribe', {'url': '@flakychan'})
+    assert r.status == 200, body
+    show = json.loads(body)['show']
+    try:
+        assert show['feed_url'] == youtube.feed_url(cid) and show['episodes'] == 2
+    finally:
+        P.unsubscribe(show['id'])

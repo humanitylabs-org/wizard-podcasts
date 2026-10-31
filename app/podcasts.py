@@ -37,6 +37,7 @@ MAX_OPML_BYTES = 2 * MB
 MAX_EPISODE_BYTES = int(os.environ.get('PODCASTS_MAX_EPISODE_MB', '1024')) * MB
 DISK_RESERVE_BYTES = int(os.environ.get('PODCASTS_DISK_RESERVE_MB', '512')) * MB
 # A skipped episode's finished download is kept this long so Undo is instant; then it is deleted to free space.
+YOUTUBE_RETRY_SECONDS = 1.0
 SKIP_GRACE_SECONDS = int(os.environ.get('PODCASTS_SKIP_GRACE_SECONDS', '180'))
 SEARCH_URL = 'https://itunes.apple.com/search'
 DEFAULTS = {
@@ -359,19 +360,23 @@ def _subscribe_youtube(text):
     already = _existing(long_form, every)
     if already:
         return already, None, None, None
-    url = long_form
-    try:
-        parsed, r = _fetch_feed(url)
-    except FetchError as e:
-        if '404' not in str(e):
-            raise Problem(422, str(e)) from None
-        url = every  # no long-form uploads list: the channel feed, with Shorts skipped by the parser
+    # YouTube's feed endpoints answer 404/500 intermittently: retry each once; with no long-form uploads list, the
+    # channel feed is used (the parser skips Shorts).
+    parsed = r = None
+    last = None
+    for url in (long_form, long_form, every, every):
         try:
             parsed, r = _fetch_feed(url)
-        except (FetchError, feeds.FeedError) as e2:
-            raise Problem(422, str(e2)) from None
-    except feeds.FeedError as e:
-        raise Problem(422, str(e)) from None
+            break
+        except FetchError as e:
+            last = e
+            if not re.search(r'\b(404|5\d\d)\b', str(e)):
+                raise Problem(422, str(e)) from None
+            time.sleep(YOUTUBE_RETRY_SECONDS)
+        except feeds.FeedError as e:
+            raise Problem(422, str(e)) from None
+    else:
+        raise Problem(422, str(last)) from None
     if parsed is not None:
         parsed['title'] = info['title'] or parsed['title']
         parsed['author'] = parsed['author'] or info['title']
