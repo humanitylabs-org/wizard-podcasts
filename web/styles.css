@@ -21,34 +21,53 @@
 .pc-art-lg { width: 96px; height: 96px; }
 .pc-art-xl { width: min(72vw, 340px, 34vh); height: auto; aspect-ratio: 1; margin: 8px auto 0; box-shadow: 0 10px 40px color-mix(in srgb, var(--wz-base) 55%, transparent); }
 
-/* top: one row of show chips, then the filter and find buttons */
-.pc-top { flex: none; display: flex; align-items: center; gap: 2px; padding: calc(var(--wos-cutout, 0px) + 6px) 6px 6px 0; }
-.pc-chips { flex: 1; min-width: 0; display: flex; gap: 6px; overflow-x: auto; overscroll-behavior-x: contain; padding: 2px 6px 2px var(--wz-gutter, 12px); scrollbar-width: none; -webkit-overflow-scrolling: touch; }
-.pc-chips::-webkit-scrollbar { display: none; }
-.pc-chip { flex: none; display: inline-flex; align-items: center; gap: 7px; min-height: 44px; max-width: 170px; padding: 4px 12px 4px 4px; border-radius: var(--r-pill);
-  background: var(--fill); border: 1px solid var(--line); color: var(--ink-2); font-size: var(--wz-text-md, .875rem); font-weight: 600; white-space: nowrap;
-  -webkit-touch-callout: none; user-select: none; -webkit-user-select: none; }
-.pc-chip-all { padding: 4px 16px; }
+/* the one nav bar: My feed and Discover (a two-way toggle) + Filters. Wide windows: at the top, icon + label in a
+ * segmented pair with Filters at the far end. Narrow windows: the bottom tab bar (see the thumb-first block). */
+.pc-nav, .pc-pillbar { --wz-gutter: 12px; }
+@container wz-app (min-width: 600px) { .pc-nav, .pc-pillbar { --wz-gutter: 20px; } }
+@container wz-app (min-width: 960px) { .pc-nav, .pc-pillbar { --wz-gutter: 28px; } }
+.pc-nav { flex: none; display: flex; align-items: center; gap: 8px; padding: calc(var(--wos-cutout, 0px) + 8px) var(--wz-gutter) 6px; }
+.pc-navpair { display: flex; gap: 2px; padding: 3px; border-radius: var(--r-pill); background: var(--fill); border: 1px solid var(--line); }
+.pc-nav-b { position: relative; display: inline-flex; align-items: center; justify-content: center; gap: 7px; min-width: 44px; min-height: 44px; padding: 0 16px 0 13px;
+  border-radius: var(--r-pill); color: var(--ink-2); font-size: var(--wz-text-md, .875rem); font-weight: 600; white-space: nowrap; -webkit-tap-highlight-color: transparent; }
+.pc-nav-i { position: relative; display: inline-grid; place-items: center; flex: none; }
+.pc-nav-b svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.pc-nav-b[aria-current="page"] { background: var(--accent); color: var(--on-accent); }
+@media (hover: hover) { .pc-nav-b:not([aria-current="page"]):not(:disabled):hover { color: var(--ink); background: var(--fill-2); } }
+.pc-nav-b:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.pc-nav-b:disabled { opacity: .4; cursor: default; }
+.pc-nav-filter { margin-left: auto; background: var(--fill); border: 1px solid var(--line); }
+.pc-dot { position: absolute; top: -3px; right: -4px; width: 8px; height: 8px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 2px var(--wz-panel, var(--canvas)); }
+/* the active show filter: one pill over the feed, tap clears it */
+.pc-pillbar { flex: none; display: flex; padding: 0 var(--wz-gutter) 6px; }
+.pc-pill { display: inline-flex; align-items: center; gap: 8px; max-width: 100%; min-height: 44px; padding: 4px 10px 4px 4px; border-radius: var(--r-pill);
+  background: var(--accent); color: var(--on-accent); font-size: var(--wz-text-md, .875rem); font-weight: 600; }
+.pc-pill-art { flex: none; width: 34px; height: 34px; border-radius: 50%; object-fit: cover; }
+.pc-pill-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pc-pill svg { flex: none; width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 2.2; stroke-linecap: round; }
+.pc-pill:not(:has(img:not([hidden]))) { padding-left: 14px; }
+/* show chips (the Filters sheet's show picker) */
+.pc-chip { flex: none; display: inline-flex; align-items: center; gap: 7px; min-width: 0; min-height: 44px; padding: 4px 12px 4px 4px; border-radius: var(--r-pill);
+  background: var(--fill); border: 1px solid var(--line); color: var(--ink-2); font-size: var(--wz-text-md, .875rem); font-weight: 600; white-space: nowrap; text-align: left; }
+.pc-chip-all { padding: 4px 16px; justify-content: center; }
 .pc-chip-art { flex: none; width: 34px; height: 34px; border-radius: 50%; object-fit: cover; background: var(--solid-2); pointer-events: none; }
 .pc-chip-ph { display: grid; place-items: center; font-weight: 700; color: var(--ink-2); }
 .pc-chip-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .pc-chip:active { transform: scale(.97); }
 @media (hover: hover) { .pc-chip:hover { color: var(--ink); border-color: var(--line-2); } }
 .pc-chip[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+.pc-showgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 6px; max-height: min(36vh, 300px); overflow-y: auto;
+  overscroll-behavior: contain; padding: 2px; scrollbar-width: thin; }
 .pc-tool { position: relative; flex: none; width: 44px; height: 44px; border-radius: 50%; display: grid; place-items: center; color: var(--ink-2); }
 .pc-tool:active { background: var(--fill); }
 @media (hover: hover) { .pc-tool:hover { color: var(--ink); background: var(--fill); } }
 .pc-tool svg { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
-.pc-dot { position: absolute; top: 9px; right: 9px; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); }
-.pc-tool-label { display: none; }
-/* wide windows: Shows and Find carry their names, so managing shows is visible without a long-press */
-@container wz-app (min-width: 700px) {
-  .pc-top { gap: 6px; padding-right: 10px; }
-  .pc-tool-wide { width: auto; display: inline-flex; gap: 7px; padding: 0 14px 0 11px; border-radius: var(--r-pill); border: 1px solid var(--line); background: var(--fill);
-    font-size: var(--wz-text-md, .875rem); font-weight: 600; }
-  .pc-tool-wide svg { width: 18px; height: 18px; }
-  .pc-tool-wide .pc-tool-label { display: inline; }
-}
+/* pages above a root (show, episode, player): an on-screen Back that stays reachable while scrolling */
+.pc-backrow { position: sticky; top: 0; z-index: 4; height: 48px; margin-bottom: -4px; pointer-events: none; }
+.pc-back { pointer-events: auto; width: 44px; height: 44px; margin: 2px 0 0 -4px; border-radius: 50%; display: grid; place-items: center; color: var(--ink);
+  background: var(--wz-panel, color-mix(in srgb, var(--wz-text) 10%, var(--wz-base))); border: 1px solid var(--line); }
+.pc-back svg { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round; }
+@media (hover: hover) { .pc-back:hover { border-color: var(--line-2); } }
 
 /* feed: quiet sticky date labels, then rows (artwork, title, show · posted · length, thin progress when started) */
 .pc-group { position: relative; }
@@ -87,8 +106,11 @@
 .pc-failed { flex: none; display: grid; place-items: center; width: 24px; color: var(--danger); }
 .pc-failed svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
 
-/* find shows */
-.pc-search { display: flex; gap: 4px; align-items: center; padding: 10px 0 4px; }
+/* discover: search box (+ the settings gear in the top corner), results or the followed shows */
+.pc-view { position: relative; }
+.pc-gear { position: absolute; top: 6px; right: -6px; z-index: 3; width: 44px; height: 44px; }
+.pc-gear svg { width: 20px; height: 20px; }
+.pc-search { display: flex; gap: 4px; align-items: center; padding: 6px 44px 6px 0; }
 .pc-search .wz-field { flex: 1; height: 48px; font-size: 1rem; }
 .pc-result .wz-row { cursor: default; }
 .pc-ep.pc-result .wz-main small { display: block; overflow: hidden; text-overflow: ellipsis; }
@@ -151,8 +173,7 @@
 /* bottom: compact mini player while something is loaded */
 .pc-dock { position: relative; flex: none; padding-bottom: env(safe-area-inset-bottom, 0px); }
 .pc-mini { position: relative; display: flex; align-items: center; gap: 4px; padding: 6px 6px 6px var(--wz-gutter, 12px); border-top: 1px solid var(--line);
-  background: color-mix(in srgb, var(--canvas) 86%, transparent); backdrop-filter: blur(18px); -webkit-backdrop-filter: blur(18px); }
-html.wz-hosted .pc-mini { background: color-mix(in srgb, var(--wz-base) 60%, transparent); }
+  background: var(--wz-panel, color-mix(in srgb, var(--wz-text) 10%, var(--wz-base))); }
 .pc-mini-bar { position: absolute; left: 0; right: 0; top: -1px; height: 2px; background: transparent; }
 .pc-mini-bar i { display: block; height: 100%; width: 0; background: var(--accent); }
 .pc-mini-open { flex: 1; min-width: 0; min-height: 48px; display: flex; align-items: center; gap: 10px; text-align: left; border-radius: var(--r); }
@@ -164,37 +185,46 @@ html.wz-hosted .pc-mini { background: color-mix(in srgb, var(--wz-base) 60%, tra
 .pc-icon svg { width: 26px; height: 26px; }
 .pc-app[data-view="player"] .pc-mini { display: none; }
 
-/* toast with Undo, above the dock */
+/* toast with Undo, above the dock (and so above the phone's nav bar) */
 .pc-toast { position: absolute; left: 12px; right: 12px; bottom: calc(100% + 8px); z-index: 5; display: flex; align-items: center; gap: 12px; min-height: 48px; padding: 4px 6px 4px 16px; border-radius: var(--r); background: var(--solid-2); border: 1px solid var(--line-2); color: var(--ink); font-size: var(--wz-text-md, .875rem); box-shadow: 0 8px 28px color-mix(in srgb, var(--wz-base) 50%, transparent); }
 .pc-toast span { flex: 1; min-width: 0; }
 .pc-toast-btn { min-height: 44px; padding: 0 14px; border-radius: var(--r-tile); color: var(--accent); font-weight: 700; }
 @container wz-app (min-width: 760px) { .pc-toast { left: auto; width: 420px; } }
 
-/* thumb-first (narrow windows, the same breakpoint as the wide labels): content only on top, every control in one
- * bottom dock (mini player stacked right above the chips + filter + Shows + Find), lists read bottom-up like a chat.
- * The script reads --pc-thumb so its order and this layout switch at exactly the same width. */
+/* thumb-first (narrow windows): content only on top; the nav bar is the bottom tab bar (above the safe area) with
+ * the mini player stacked right above it; lists read bottom-up like a chat. The script reads --pc-thumb so its order
+ * and this layout switch at exactly the same width. */
 @container wz-app (width < 700px) {
-  #main { --pc-thumb: 1; overflow-anchor: none; }
+  #main { --pc-thumb: 1; overflow-anchor: none; padding-top: calc(var(--wos-cutout, 0px) + 4px); }
   .pc-app > #main { order: 1; }
   .pc-app > #status { order: 2; }
-  .pc-app > .pc-dock { order: 3; }
-  .pc-app > .pc-top { order: 4; padding: 6px 6px calc(6px + env(safe-area-inset-bottom, 0px)) 0; border-top: 1px solid var(--line);
-    background: color-mix(in srgb, var(--canvas) 86%, transparent); backdrop-filter: blur(18px); -webkit-backdrop-filter: blur(18px); }
-  html.wz-hosted .pc-app > .pc-top { background: color-mix(in srgb, var(--wz-base) 60%, transparent); }
-  .pc-app:has(#mini:not([hidden])) > .pc-top { border-top-color: transparent; }
-  .pc-app[data-view="feed"] > .pc-dock { padding-bottom: 0; }
-  .pc-app[data-view="feed"] > #main { padding-top: calc(var(--wos-cutout, 0px) + 4px); }
+  .pc-app > .pc-pillbar { order: 3; padding-top: 6px; }
+  .pc-app > .pc-dock { order: 4; padding-bottom: 0; }
+  .pc-app > .pc-nav { order: 5; gap: 0; padding: 4px 4px calc(4px + env(safe-area-inset-bottom, 0px)); border-top: 1px solid var(--line);
+    background: var(--wz-panel, color-mix(in srgb, var(--wz-text) 10%, var(--wz-base))); }
+  .pc-app:has(#mini:not([hidden])) > .pc-nav { border-top-color: transparent; }
+  .pc-navpair { display: contents; }
+  .pc-nav-b { flex: 1 1 0; flex-direction: column; gap: 3px; min-height: 54px; padding: 4px 2px; margin: 0; border: 0; border-radius: var(--r-tile); background: none;
+    font-size: var(--wz-text-sm, .8125rem); }
+  .pc-nav-i { width: 58px; height: 30px; border-radius: var(--r-pill); }
+  .pc-nav-b[aria-current="page"] { background: none; color: var(--ink); }
+  .pc-nav-b[aria-current="page"] .pc-nav-i { background: var(--accent); color: var(--on-accent); }
+  .pc-nav-filter { margin-left: 0; background: none; border: 0; }
+  .pc-dot { top: 2px; right: 14px; }
+  @media (hover: hover) { .pc-nav-b:not([aria-current="page"]):not(:disabled):hover { background: var(--fill); } }
   /* lists sit on the bottom edge when short; More (older) is on top */
-  #view-feed:not([hidden]), #view-following:not([hidden]), #view-add:not([hidden]) { display: flex; flex-direction: column; justify-content: flex-end; min-height: 100%; }
+  #view-feed:not([hidden]), #view-discover:not([hidden]) { display: flex; flex-direction: column; justify-content: flex-end; min-height: 100%; }
   #view-feed > .pc-more { order: -1; }
   .pc-none { padding: 0 0 32px; }
-  /* find: the search box is a composer at the bottom, results above it (best match lowest) */
-  .pc-app[data-view="add"] > #main { padding-bottom: 0; }
-  #search-results { order: 1; }
+  /* discover: the gear keeps its top corner; the search box is a composer at the bottom, rows above it (best match
+   * and newest show lowest) */
+  #view-discover:not([hidden]) { padding-top: 48px; }
+  .pc-gear { top: 0; }
+  .pc-app[data-view="discover"] > #main { padding-bottom: 0; }
+  #search-results, #following-list { order: 1; }
   #search-note { order: 2; }
-  .pc-search { order: 3; position: sticky; bottom: 0; z-index: 3; margin: 0 calc(-1 * var(--wz-gutter, 12px)); padding: 8px 6px 8px var(--wz-gutter, 12px);
-    border-top: 1px solid var(--line); background: color-mix(in srgb, var(--canvas) 86%, transparent); backdrop-filter: blur(18px); -webkit-backdrop-filter: blur(18px); }
-  html.wz-hosted .pc-search { background: color-mix(in srgb, var(--wz-base) 60%, transparent); }
+  .pc-search { order: 3; position: sticky; bottom: 0; z-index: 3; margin: 0 calc(-1 * var(--wz-gutter, 12px)); padding: 8px var(--wz-gutter, 12px);
+    border-top: 1px solid var(--line); background: var(--wz-panel, color-mix(in srgb, var(--wz-text) 10%, var(--wz-base))); }
 }
 
 /* the one sheet: filter segments, show actions, settings */

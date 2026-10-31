@@ -885,14 +885,15 @@ def test_view_smoke_minimal_screen():
     ids = set(re.findall(r'\bid="([^"]+)"', html))
     used = set(re.findall(r"\$\('([^']+)'\)", js))
     assert used and used <= ids, sorted(used - ids)
-    for gone in ('pc-tabs', 'Up next', 'view-inbox', 'view-shows', 'Continue listening', 'data-tab'):
+    for gone in ('pc-tabs', 'Up next', 'view-inbox', 'view-shows', 'Continue listening', 'data-tab',
+                 'view-add', 'view-following', 'open-add', 'open-shows', 'id="chips"', 'pc-top'):
         assert gone not in html and gone not in js, gone
     assert html.count('class="wz-sheet"') == 1
     assert 'api/feed' in js and 'WizardApp' in js and 'WzSheet.open' in js
-    for view in ('feed', 'add', 'following', 'show', 'episode', 'player'):
+    for view in ('feed', 'discover', 'show', 'episode', 'player'):
         assert f'id="view-{view}"' in html
     r, body = req('GET', '/')
-    assert r.status == 200 and b'id="chips"' in body and b'pc-tabs' not in body
+    assert r.status == 200 and b'id="nav"' in body and b'pc-tabs' not in body
 
 
 # ------------------------------------------------------------------ 0.3.1: skip (dismiss without playing) and shows list
@@ -1038,9 +1039,12 @@ def test_view_has_skip_and_shows_list():
     html = (ROOT / 'web/index.html').read_text()
     js = (ROOT / 'web/app.js').read_text()
     css = (ROOT / 'web/styles.css').read_text()
-    assert 'id="open-shows"' in html and 'id="following-list"' in html and 'pc-tool-label' in html
+    # the followed shows (Following/Follow toggles, tap opens a show) live in Discover when the search box is empty
+    discover = html.split('id="view-discover"')[1].split('</section>')[0]
+    assert 'id="following-list"' in discover and 'id="search-input"' in discover and 'id="open-settings"' in discover
+    assert "'Following' : 'Follow'" in js and "openView('show', s.id)" in js
     assert "'/skip'" in js and 'skip-all' in js and "'Skipped'" in js and 'swipeable' in js
-    assert '.pc-skip' in css and 'min-width: 700px' in css
+    assert '.pc-skip' in css and '@container wz-app (width < 700px)' in css
     # no Podcasts/YouTube filter or kind label on the screen
     assert 'YouTube' not in html and "kind" not in js.split('function feedPath')[1].split('}')[0]
 
@@ -1069,18 +1073,16 @@ def test_view_thumb_first_phone_order_and_bottom_dock():
     import subprocess
     js = (ROOT / 'web/app.js').read_text()
     css = (ROOT / 'web/styles.css').read_text()
-    # one breakpoint: the thumb layout is the exact complement of the wide-label query, and the script reads it from CSS
-    assert '@container wz-app (min-width: 700px)' in css and '@container wz-app (width < 700px)' in css
+    # one breakpoint for the thumb layout, and the script reads it from CSS
+    assert '@container wz-app (width < 700px)' in css and 'min-width: 700px' not in css
     narrow = css.split('@container wz-app (width < 700px)')[1].split('\n}\n')[0]
     assert '--pc-thumb: 1' in narrow and "getPropertyValue('--pc-thumb')" in js
     order = {sel: int(n) for sel, n in re.findall(r'\.pc-app > ([#.][\w-]+) \{ order: (\d+)', narrow)}
-    assert order['#main'] < order['#status'] < order['.pc-dock'] < order['.pc-top'], order  # controls last, mini above them
-    assert 'safe-area-inset-bottom' in narrow and 'position: sticky; bottom: 0' in narrow  # bar above the inset; find composer
+    assert order['#main'] < order['#status'] < order['.pc-pillbar'] < order['.pc-dock'] < order['.pc-nav'], order  # nav last, mini right above
+    assert 'safe-area-inset-bottom' in narrow and 'position: sticky; bottom: 0' in narrow  # bar above the inset; search composer
     html = (ROOT / 'web/index.html').read_text()
     dock = html.split('id="dock"')[1].split('</footer>')[0]
     assert 'id="mini"' in dock and 'id="toast"' in dock  # toast floats above the dock, never over the bar
-    for control in ('id="chips"', 'id="open-filter"', 'id="open-shows"', 'id="open-add"'):
-        assert control in html.split('id="top"')[1].split('<main')[0], control
     assert "'Newest at bottom'" in js and "'Newest first'" in js
     node = shutil.which('node')
     if not node:
@@ -1104,3 +1106,42 @@ console.log(JSON.stringify({{wide: flat(feedGroups(eps, now, false)), phone: fla
     assert phone == wide[::-1] and phone[-1] == 'today' and phone[-2] == 'yesterday'
     assert got['phone'][-1][1] == [3, 4]  # newest episode is the very last row
     assert [i for _, ids in got['phone'] for i in ids] == [1, 2, 3, 4]
+
+
+# ------------------------------------------------------------------ 0.4.0: three-button nav (My feed, Discover, Filters)
+
+def test_view_three_button_nav():
+    """One nav bar with exactly three buttons (icon + short label): My feed and Discover toggle the two roots, Filters
+    opens the one sheet (shows, state, order, skip all). Top in wide windows (first in the page), bottom on a phone
+    (ordered last). Back closes pages, then Discover -> My feed, and leaves My feed to the shell."""
+    import re
+    html = (ROOT / 'web/index.html').read_text()
+    js = (ROOT / 'web/app.js').read_text()
+    css = (ROOT / 'web/styles.css').read_text()
+    nav = html.split('<nav class="pc-nav" id="nav"')[1].split('</nav>')[0]
+    buttons = re.findall(r'<button[^>]*\bid="([^"]+)"', nav)
+    assert buttons == ['nav-feed', 'nav-discover', 'nav-filter'], buttons
+    labels = re.findall(r'class="pc-nav-l">([^<]+)<', nav)
+    assert labels == ['My feed', 'Discover', 'Filters'] and nav.count('<svg') == 3
+    # wide: the bar comes before the content; no other controls above the feed
+    body = html.split('<div class="wz-app pc-app">')[1]
+    assert body.index('id="nav"') < body.index('<main')
+    assert re.findall(r'<button[^>]*\bid="([^"]+)"', body.split('<main')[0]) == buttons + ['filter-pill']
+    # toggles show their state; Filters only narrows My feed
+    assert "setAttribute('aria-current', 'page')" in js and '[aria-current="page"]' in css
+    assert "$('nav-feed').onclick = () => setTab('feed')" in js and "$('nav-discover').onclick = () => setTab('discover')" in js
+    assert "$('nav-filter').onclick = openFilters" in js and "$('nav-filter').disabled = v !== 'feed'" in js
+    # the Filters sheet: show picker with All shows, state, order (phone and wide labels), skip all for the chosen show
+    sheet = js.split('function openFilters()')[1].split('\n}\n')[0]
+    for bit in ("'pc-showgrid'", 'state.shows.map(filterChip)', "'Unplayed'", "'Skipped'", "'Newest at bottom'", "'Oldest first'", "'Skip all from '", "sheet('Filters'"):
+        assert bit in sheet, bit
+    assert "'All shows'" in js
+    # the active show filter is visible and one tap clears it
+    assert "$('filter-pill').onclick = () => setFilter({ show: null })" in js
+    # Back: pages first, then Discover -> My feed, then the shell (no trap); on-screen Back on pages
+    assert "canGoBack: () => state.stack.length > 0 || state.tab !== 'feed'" in js
+    pop = js.split('function popView()')[1].split('\n}\n')[0]
+    assert "if (state.tab !== 'feed') { setTab('feed'); return true; }" in pop and pop.rstrip().endswith('return false;')
+    assert "$('back-btn').onclick = () => popView()" in js and "$('backrow').hidden = !state.stack.length" in js
+    # no Podcasts/YouTube filter, no chips row or Find/Shows buttons left behind
+    assert 'YouTube' not in html and 'holdable' not in js and 'renderChips' not in js
