@@ -4,7 +4,7 @@ id: wizard-podcasts
 name: Podcasts
 type: service
 category: app
-version: 0.4.2
+version: 0.5.0
 voice_names: [podcasts, podcast, podcast player]
 summary: Your private podcast player. Follow shows, new episodes download on their own, and your place is saved across devices.
 tags: [audio, learning]
@@ -43,4 +43,6 @@ A private podcast player on your own Wizard. Search the free Apple Podcasts dire
 
 Podcast episodes always come from each show's public feed enclosure. YouTube channels can be followed as shows too: their long-form uploads arrive as audio only through the YouTube Music app (the `music-source` connector Podcasts uses), with the same feed, downloads and saved place. Feed, search, artwork and audio requests refuse private, loopback and tailnet addresses; downloads are size-capped; show notes are sanitized.
 
-Agent tools (MCP): `podcasts_status`, `podcasts_search`, `podcasts_subscribe`, `podcasts_list`, `podcasts_episode`, `podcasts_mark`. Transcripts are planned for v2 through the Transcriber app (see README).
+Discover is a feed of shows you might like, learned privately on your Wizard from what you follow, thumb up or down, listen through and skip (similar shows from Apple Podcasts and YouTube, guests your shows share, and what is popular), with a one-tap preview of each show's newest episode.
+
+Agent tools (MCP): `podcasts_status`, `podcasts_search`, `podcasts_subscribe`, `podcasts_list`, `podcasts_episode`, `podcasts_mark`, `podcasts_discover`, `podcasts_taste`. Transcripts are planned for v2 through the Transcriber app (see README).

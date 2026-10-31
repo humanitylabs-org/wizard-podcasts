@@ -97,6 +97,18 @@ CREATE TABLE IF NOT EXISTS episodes (
 CREATE INDEX IF NOT EXISTS episodes_show ON episodes(show_id, published DESC);
 CREATE INDEX IF NOT EXISTS episodes_download ON episodes(download, queued_at);
 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+-- 0.5.0 Discover: explicit thumbs (1 up, -1 down) per show, by feed address; never sent anywhere
+CREATE TABLE IF NOT EXISTS taste (feed_url TEXT PRIMARY KEY, value INTEGER NOT NULL, title TEXT NOT NULL DEFAULT '',
+  author TEXT NOT NULL DEFAULT '', artwork TEXT NOT NULL DEFAULT '', genres TEXT NOT NULL DEFAULT '[]',
+  itunes_id INTEGER NOT NULL DEFAULT 0, channel_id TEXT NOT NULL DEFAULT '', at INTEGER NOT NULL);
+-- shows he stopped following (a mild 'less like this'); following again removes the row
+CREATE TABLE IF NOT EXISTS unfollows (feed_url TEXT PRIMARY KEY, title TEXT NOT NULL DEFAULT '', genres TEXT NOT NULL DEFAULT '[]',
+  itunes_id INTEGER NOT NULL DEFAULT 0, at INTEGER NOT NULL);
+-- what each followed show is in the public directories (Apple id, genres), looked up once a month
+CREATE TABLE IF NOT EXISTS show_meta (feed_url TEXT PRIMARY KEY, itunes_id INTEGER NOT NULL DEFAULT 0, genres TEXT NOT NULL DEFAULT '[]',
+  genre_ids TEXT NOT NULL DEFAULT '{}', at INTEGER NOT NULL);
+-- chart / similar-show / lookup answers (12 h) and the built recommendation pool
+CREATE TABLE IF NOT EXISTS discover_cache (key TEXT PRIMARY KEY, value TEXT NOT NULL, at INTEGER NOT NULL);
 """
 # Columns added after 0.3.0, applied to existing databases in place (never a rebuild).
 MIGRATIONS = [
@@ -415,6 +427,7 @@ def subscribe(url, auto_download=None):
         cur = c.execute('INSERT OR IGNORE INTO shows(feed_url, added_at, auto_download) VALUES(?,?,?)', (url, now(), int(bool(auto_download))))
         sid = cur.lastrowid if cur.rowcount else c.execute('SELECT id FROM shows WHERE feed_url=?', (url,)).fetchone()['id']
         _apply_feed(c, sid, parsed, r, first=True)
+        c.execute('DELETE FROM unfollows WHERE feed_url=?', (url,))  # following again takes back the old 'less like this'
         return sid
     sid = write(add)
     threading.Thread(target=_cache_art, args=(sid,), daemon=True).start()
@@ -527,11 +540,21 @@ def art(sid):
     return path.read_bytes(), (t.read_text() if t.is_file() else 'image/jpeg')
 
 
-def unsubscribe(sid):
+def unsubscribe(sid, undo=False):
+    """Stop following a show. Unless this only undoes a follow made a moment ago (undo=true: Discover's Follow toggle
+    or a toast's Undo), it is remembered as a mild 'less like this' for Discover."""
     row = q('SELECT * FROM shows WHERE id=?', (sid,), one=True)
     if not row:
         raise Problem(404, 'Show not found.')
-    write(lambda c: c.execute('DELETE FROM shows WHERE id=?', (sid,)))
+
+    def go(c):
+        if not undo:
+            m = c.execute('SELECT itunes_id, genres FROM show_meta WHERE feed_url=?', (row['feed_url'],)).fetchone()
+            c.execute('INSERT INTO unfollows(feed_url, title, genres, itunes_id, at) VALUES(?,?,?,?,?) ON CONFLICT(feed_url) DO UPDATE SET '
+                      'title=excluded.title, genres=excluded.genres, itunes_id=excluded.itunes_id, at=excluded.at',
+                      (row['feed_url'], row['title'], m['genres'] if m else '[]', m['itunes_id'] if m else 0, now()))
+        c.execute('DELETE FROM shows WHERE id=?', (sid,))
+    write(go)
     shutil.rmtree(EPISODES_DIR / str(sid), ignore_errors=True)
     for name in (f'{sid}.img', f'{sid}.type'):
         (ART_DIR / name).unlink(missing_ok=True)
@@ -790,10 +813,12 @@ def feed(show_id=None, state=None, sort=None, limit=100, offset=0, query=None):
     rows = q(EP_SELECT + 'WHERE ' + where + ' ORDER BY ' + order + ' LIMIT ? OFFSET ?', args + [limit, offset])
     waiting = {r['show_id']: r['n'] for r in q('SELECT show_id, COUNT(*) n FROM episodes e WHERE ' + _FEED_WHERE['unplayed'] + ' GROUP BY show_id')}
     shows = []
+    tastes = {r['feed_url']: r['value'] for r in q('SELECT feed_url, value FROM taste')}
     for s in q('SELECT s.*, (SELECT MAX(published) FROM episodes WHERE show_id=s.id) latest FROM shows s '
                'ORDER BY latest IS NULL, latest DESC, s.id'):
         d = show_dict(s)
-        d.update({'short_title': short_title(d['title']), 'latest': s['latest'] or 0, 'unplayed': waiting.get(s['id'], 0)})
+        d.update({'short_title': short_title(d['title']), 'latest': s['latest'] or 0, 'unplayed': waiting.get(s['id'], 0),
+                  'taste': tastes.get(s['feed_url'], 0)})
         shows.append(d)
     return {'episodes': [episode_dict(r) for r in rows], 'total': total, 'offset': offset,
             'filter': {'show_id': show_id, 'state': state, 'sort': sort, 'q': ' '.join(terms)}, 'shows': shows, 'now_playing': now_playing()}

@@ -5,3 +5,5 @@ Podcasts adapts the Wizard App Manager `hello-wizard` reference template (GPL-3.
 The view loads the centrally maintained `/wizard-os-home/core/app-client.js` (shared WizardApp functions); no platform code is copied into this app. Podcast search uses Apple's public iTunes Search API; episode audio comes from each publisher's public feed enclosure. Python and the base image keep their upstream licenses.
 
 The settings gear icon path is from Feather Icons (MIT, Cole Bemis).
+
+The thumbs up/down icon paths are from Lucide (ISC License, Lucide Contributors). Discover reads public directory data from Apple (Apple Podcasts charts, iTunes Search/lookup, public show pages) and YouTube (public channel and watch pages); no account or key is used.

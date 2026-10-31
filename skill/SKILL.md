@@ -1,7 +1,7 @@
 ---
 name: wizard-podcasts
 description: Use when the owner asks about podcasts - following a show, new episodes, what he was listening to, or episode notes.
-version: 0.4.2
+version: 0.5.0
 author: Humanity Labs
 license: GPL-3.0-only
 platforms: [linux, macos]
@@ -22,4 +22,7 @@ The owner's private podcast player (app id `wizard-podcasts`). Use its MCP tools
 - `podcasts_episode` returns show notes (`notes_text`), saved `position` in seconds, `duration`, `download.state`, and `file` (path relative to the Podcasts app data folder once downloaded). `transcript` is `not_available` in v1; `feed_transcript_url` is the publisher's own transcript link when the feed has one.
 - `podcasts_mark` with `played: true|false` and/or `skipped: true|false` (optional `in_inbox`). Skipped = the owner dismissed it from his feed without listening (not played; its unstarted download is removed); `skipped: false` brings it back. Skipped episodes are left out of `view: "inbox"` and carry `skipped: true` in show episode lists. Read the returned episode to confirm. Only skip on the owner's word; he decides what to dismiss.
 
-Playback happens in the Podcasts screen (`?episode=<id>` opens one episode, `?show=<id>` one show, `?tab=discover` Discover). The screen has three buttons: My feed, Discover (search + followed shows) and Filters (search episodes, show, state, order). You cannot start audio on the owner's device. Downloads and new-episode checks run in the background on their own. If a tool returns an error, report it as written; never claim a show was followed or an episode marked without the returned readback.
+- Recommendations: `podcasts_discover` returns shows he might like, best first (`reason` says why: `Like <show>`, `Guest on <show>`, `More from <author>`, `Popular in <genre or country>`), each with its newest episode; never a show he follows or thumbed down. Page with `cursor` = `next_cursor`. `building: true` means the first list is still being gathered; try again in a minute. To follow one, pass its `feed_url` to `podcasts_subscribe`.
+- Taste: `podcasts_taste` with no `value` summarises what he likes and avoids (shows and genres). With `value` it sets his thumb on one show (`feed_url` from Discover or `show_id` of a followed show): 1 = more like it, -1 = never recommend it (also dulls its genre and similar shows), 0 = clear. Only on his word; report the returned summary.
+
+Playback happens in the Podcasts screen (`?episode=<id>` opens one episode, `?show=<id>` one show, `?tab=discover` Discover). The screen has three buttons: My feed, Discover (recommended shows with thumbs up/down, Follow and a tap to preview the newest episode; plus search) and Filters (search episodes, show, state, order, and each followed show with Unfollow). You cannot start audio on the owner's device. Downloads and new-episode checks run in the background on their own. If a tool returns an error, report it as written; never claim a show was followed or an episode marked without the returned readback.

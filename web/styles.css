@@ -64,6 +64,15 @@
 .pc-chip[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
 .pc-showgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 6px; max-height: min(36vh, 300px); overflow-y: auto;
   overscroll-behavior: contain; padding: 2px; scrollbar-width: thin; }
+/* 0.5.0: the shows list in Filters: pick to filter, a small Unfollow at the row's end */
+.pc-showlist { grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); }
+.pc-srow { display: flex; align-items: center; gap: 2px; min-width: 0; }
+.pc-srow > .pc-chip { flex: 1; }
+.pc-srow-x { flex: none; min-height: 44px; padding: 0 10px; border-radius: var(--r-pill); color: var(--ink-3); font-size: var(--wz-text-sm, .8125rem); font-weight: 600; }
+.pc-srow-x:active { background: var(--fill-2); color: var(--ink); }
+@media (hover: hover) { .pc-srow-x:hover { background: var(--fill); color: var(--ink); } }
+.pc-srow.pc-off > .pc-chip { opacity: .45; }
+.pc-srow.pc-off > .pc-srow-x { color: var(--accent); }
 .pc-tool { position: relative; flex: none; width: 44px; height: 44px; border-radius: 50%; display: grid; place-items: center; color: var(--ink-2); }
 .pc-tool:active { background: var(--fill); }
 @media (hover: hover) { .pc-tool:hover { color: var(--ink); background: var(--fill); } }
@@ -125,6 +134,36 @@
 @media (hover: hover) { .pc-follow:hover { border-color: var(--line-2); } }
 .pc-follow:disabled { opacity: .6; }
 .pc-show-row .pc-ep-open:disabled { cursor: default; }
+/* 0.5.0 Discover cards: artwork, name, one reason line, newest episode + when; thumbs, Follow. One column on a phone,
+ * more as the window widens (.wz-grid). A text-bearing surface over glass: the opaque kit panel. */
+.pc-cards { margin: 4px 0 8px; padding: 0; list-style: none; }
+.pc-card { display: flex; flex-direction: column; gap: 2px; min-width: 0; padding: 8px 8px 6px; border-radius: var(--r); border: 1px solid var(--line);
+  background: var(--wz-panel, color-mix(in srgb, var(--wz-text) 10%, var(--wz-base))); transition: height .2s ease, opacity .2s ease; overflow: hidden; }
+.pc-card-open { display: flex; align-items: flex-start; gap: 12px; width: 100%; min-height: 44px; padding: 2px; border-radius: var(--r-tile); text-align: left; color: var(--ink); }
+.pc-card-open:disabled { cursor: default; opacity: 1; }
+@media (hover: hover) { .pc-card-open:not(:disabled):hover .pc-card-name { text-decoration: underline; text-underline-offset: 3px; } }
+.pc-card-open:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.pc-art-card { width: 76px; height: 76px; }
+.pc-card-text { flex: 1; min-width: 0; display: grid; gap: 2px; align-content: start; }
+.pc-card-name { font-size: .9375rem; font-weight: 700; line-height: 1.25; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pc-reason { font-size: var(--wz-text-sm, .8125rem); font-weight: 600; color: var(--accent); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pc-card-ep { margin-top: 2px; font-size: var(--wz-text-sm, .8125rem); line-height: 1.3; color: var(--ink-2);
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.pc-card-when { font-size: var(--wz-text-sm, .8125rem); color: var(--ink-3); }
+.pc-card.pc-current .pc-card-name { color: var(--accent); }
+.pc-card.pc-gone { opacity: 0; }
+.pc-card-acts { display: flex; align-items: center; gap: 2px; }
+.pc-card-acts .pc-follow { margin-left: auto; }
+.pc-thumb { flex: none; width: 44px; height: 44px; border-radius: 50%; display: grid; place-items: center; color: var(--ink-3); -webkit-tap-highlight-color: transparent; }
+.pc-thumb svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.9; stroke-linecap: round; stroke-linejoin: round; }
+.pc-thumb:active { background: var(--fill-2); color: var(--ink); }
+@media (hover: hover) { .pc-thumb:hover { background: var(--fill); color: var(--ink); } }
+.pc-thumb:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.pc-thumb[aria-pressed="true"] { color: var(--accent); }
+.pc-thumb[aria-pressed="true"] svg { fill: color-mix(in srgb, var(--accent) 28%, transparent); }
+.pc-thumb:disabled { opacity: .4; }
+.pc-disc-note { text-align: center; padding: 24px 0; }
+@container wz-app (min-width: 960px) { .pc-art-card { width: 88px; height: 88px; } }
 
 /* show and episode pages */
 .pc-hero { display: flex; gap: 14px; align-items: center; padding: 10px 4px 6px; }
@@ -175,6 +214,10 @@
 .pc-speed { min-width: 50px; min-height: 44px; padding: 0 10px; border-radius: var(--r-pill); background: var(--fill); border: 1px solid var(--line); color: var(--ink-2); font-weight: 600; font-variant-numeric: tabular-nums; }
 .pc-speed[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
 .pc-mark { align-self: center; min-width: 180px; min-height: 46px; }
+/* thumbs for the show either side of Mark played (Follow while previewing) */
+.pc-plrow { display: flex; align-items: center; justify-content: center; gap: 14px; }
+.pc-thumb-lg { width: 52px; height: 52px; border: 1px solid var(--line); background: var(--fill); }
+.pc-thumb-lg svg { width: 22px; height: 22px; }
 
 /* bottom: compact mini player while something is loaded */
 .pc-dock { position: relative; flex: none; padding-bottom: env(safe-area-inset-bottom, 0px); }
@@ -256,7 +299,8 @@
    * and newest show lowest) */
   .pc-gear { align-self: center; }
   .pc-app[data-view="discover"] > #main { padding-bottom: 0; }
-  #search-results, #following-list { order: 1; }
+  #search-results, #disc-list, #disc-note { order: 1; }
+  #view-discover > .pc-more { order: -1; }
   #search-note { order: 2; }
   .pc-search { order: 3; position: sticky; bottom: 0; z-index: 3; margin: 0 calc(-1 * var(--wz-gutter, 12px)); padding: 8px var(--wz-gutter, 12px);
     border-top: 1px solid var(--line); background: var(--wz-panel, color-mix(in srgb, var(--wz-text) 10%, var(--wz-base))); }
