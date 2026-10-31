@@ -54,8 +54,8 @@
 .pc-group { position: relative; }
 .pc-day-h { position: sticky; top: -4px; z-index: 2; margin: 0 calc(-1 * var(--wz-gutter, 12px)); padding: 10px calc(var(--wz-gutter, 12px) + 8px) 4px;
   font-size: var(--wz-text-sm, .8125rem); font-weight: 600; line-height: 1.3; letter-spacing: 0; text-transform: none; color: var(--ink-3);
-  background: color-mix(in srgb, var(--canvas) 92%, transparent); backdrop-filter: blur(18px); -webkit-backdrop-filter: blur(18px); }
-html.wz-hosted .pc-day-h { background: color-mix(in srgb, var(--wz-base) 94%, transparent); }
+  /* text-bearing floating surface: opaque kit panel (APP-DESIGN-RULES), so rows scrolled underneath never ghost through */
+  background: var(--wz-panel, color-mix(in srgb, var(--wz-text) 10%, var(--wz-base))); }
 .pc-ep { display: flex; align-items: center; gap: 4px; border-radius: var(--r); }
 .pc-ep .wz-row { flex: 1; min-width: 0; }
 .pc-ep .wz-main { min-width: 0; }
