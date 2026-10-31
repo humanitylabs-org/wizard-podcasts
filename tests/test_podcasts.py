@@ -1640,3 +1640,28 @@ def test_view_053_clear_play_errors_youtube_hint_and_exact_name_first():
     assert "merged.sort((x, z) => (nameKey(z.title) === want) - (nameKey(x.title) === want))" in js
     import youtube
     assert youtube.MISSING.endswith('then try again.')
+
+
+def test_new_follow_rebuilds_discover_soon(monkeypatch):
+    """Following a show schedules one Discover rebuild ~90 s later (so 'Like <show>' cards come the same day);
+    an already-followed show or a pool never built changes nothing; a follow during a build asks for one more pass."""
+    pool = D._empty_pool()
+    monkeypatch.setattr(D, 'load_pool', lambda: dict(pool))
+    saved = []
+    monkeypatch.setattr(D, 'save_pool', lambda p: saved.append(p))
+    assert D.note_follow({'already_subscribed': False}) is False and not saved  # never built yet
+    pool['built_at'] = D.now() - 100
+    assert D.note_follow({'already_subscribed': True}) is False and not saved
+    assert D.note_follow({'already_subscribed': False, 'show': {}}) is True
+    assert 0 < saved[-1]['retry_at'] - D.now() <= D.FOLLOW_REBUILD_S and D.wake.is_set()
+    assert 5 <= D._next_wait(saved[-1]) <= D.FOLLOW_REBUILD_S and D._next_wait({'retry_at': 0}) == 3600
+    D._state['building'] = True
+    try:
+        D.note_follow({'already_subscribed': False})
+        assert D._state.get('again') is True
+    finally:
+        D._state['building'] = False
+        D._state.pop('again', None)
+        D.wake.clear()
+    src = (ROOT / 'app/server.py').read_text()
+    assert src.count('D.note_follow(r)') == 2  # MCP podcasts_subscribe and POST /api/subscribe
