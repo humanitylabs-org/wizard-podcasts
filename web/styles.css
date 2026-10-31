@@ -217,8 +217,12 @@
   .pc-app > .pc-dock { order: 4; padding-bottom: 0; }
   /* the bottom bar (0.4.1): one compact centred control like the desktop pair; icons only, the chosen tab adds its
    * short label inline; 44px hit areas, the drawn pill is smaller */
-  .pc-app > .pc-nav { order: 5; justify-content: center; gap: 10px; padding: 4px 12px calc(4px + env(safe-area-inset-bottom, 0px)); border-top: 1px solid var(--line);
+  .pc-app > .pc-nav { order: 5; justify-content: center; gap: 10px; padding: 4px 12px max(4px, env(safe-area-inset-bottom, 0px)); border-top: 1px solid var(--line);
     background: var(--wz-panel, color-mix(in srgb, var(--wz-text) 10%, var(--wz-base))); }
+  /* 0.4.2: in a Wizard window the shell already ends the frame above its dock/home bar and keeps the device inset
+   * itself, so the bar adds no safe-area and no bottom padding there (the 44px buttons reach the frame edge, the drawn
+   * pill keeps its own 4px). Only full screen and a plain browser tab reach the glass bottom and need the inset. */
+  html.wz-hosted:not([data-presentation="immersive"]) .pc-app > .pc-nav { padding-bottom: 0; }
   .pc-app:has(#mini:not([hidden])) > .pc-nav { border-top-color: transparent; }
   .pc-navpair { gap: 0; padding: 0; }
   .pc-nav-b { isolation: isolate; gap: 6px; min-width: 48px; min-height: 44px; padding: 0 12px; background: none; font-size: var(--wz-text-sm, .8125rem); }

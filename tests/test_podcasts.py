@@ -1298,3 +1298,15 @@ def test_view_041_gear_nav_and_search_sheet():
     assert "$('q-pill').onclick = () => setFilter({ q: '' })" in js and 'id="q-pill"' in html
     # search words are never saved; Unplayed turns into All while searching and comes back after
     assert "const keep = { show: filter.show, state: stateBeforeSearch || filter.state, sort: filter.sort }" in js
+
+
+def test_view_042_phone_nav_no_double_safe_area():
+    """0.4.2: in a Wizard window the shell already ends the frame above its dock/home bar and keeps the device inset,
+    so the phone nav adds no safe-area and no bottom padding there; only full screen and a plain tab use the inset,
+    and then only the inset (max, not inset + padding)."""
+    css = (ROOT / 'web/styles.css').read_text()
+    narrow = css.split('@container wz-app (width < 700px)')[1].split('\n}\n')[0]
+    assert 'calc(4px + env(safe-area-inset-bottom' not in css
+    assert 'padding: 4px 12px max(4px, env(safe-area-inset-bottom, 0px));' in narrow
+    assert 'html.wz-hosted:not([data-presentation="immersive"]) .pc-app > .pc-nav { padding-bottom: 0; }' in narrow
+    assert '.pc-nav-b { isolation: isolate; gap: 6px; min-width: 48px; min-height: 44px;' in narrow  # 44px hit areas kept
