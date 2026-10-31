@@ -762,6 +762,7 @@ function cardRow(item) {
         const r = await api('api/subscribe', { url: item.feed_url });
         showId = r.show.id; paintFollow(true);
         toast('Following ' + r.show.title);
+        youtubeHint(r.show);
       }
     } catch (e) { say(e.message, 'error'); }
     finally { follow.disabled = false; }
@@ -1013,6 +1014,9 @@ async function runSearch(text) {
     if (seq !== searchSeq) return;
     const a = r.results || [], y = r.youtube || [], merged = [];
     for (let i = 0; i < Math.max(a.length, y.length); i++) { if (a[i]) merged.push(a[i]); if (y[i]) merged.push(y[i]); }
+    const nameKey = t => String(t || '').toLowerCase().replace(/^@/, '').replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
+    const want = nameKey(text);
+    merged.sort((x, z) => (nameKey(z.title) === want) - (nameKey(x.title) === want));  // stable: exact name first
     results = merged;
     paintResults();
     note.hidden = merged.length > 0;
@@ -1050,6 +1054,10 @@ $('search-form').onsubmit = async event => {
     openView('show', r.show.id);
   } catch (e) { say(e.message, 'error'); }
 };
+// Following a YouTube channel on a Wizard without YouTube Music: say so at once, not at the first failed play.
+function youtubeHint(show) {
+  if (show && show.source === 'youtube') api('api/status').then(st => { if (st.youtube && !st.youtube.installed && st.youtube.message) say(st.youtube.message, 'error'); }).catch(() => {});
+}
 function resultRow(item) {
   const li = el('li', 'pc-ep pc-result');
   const main = el('div', 'wz-row');
@@ -1073,7 +1081,7 @@ function resultRow(item) {
         showId = null; paintBtn(false);
       } else {
         const r = await api('api/subscribe', { url: item.feed_url });
-        showId = r.show.id; paintBtn(true);
+        showId = r.show.id; paintBtn(true); youtubeHint(r.show);
       }
     } catch (e) { say(e.message, 'error'); }
     finally { btn.disabled = false; }
@@ -1163,7 +1171,7 @@ function loadIntoPlayer(ep, autoplay) {
   mediaSession(ep);
   if (autoplay) {
     const p = audio.play();
-    if (p) p.catch(e => { if (e.name !== 'AbortError') say('Could not start playback: ' + e.message, 'error'); });
+    if (p) p.catch(playFailed);
   }
 }
 function playEpisode(ep) {
@@ -1184,7 +1192,7 @@ function togglePlay() {
   if (!state.current) return;
   if (audio.paused) {
     // Start inside the tap (mobile browsers need it), then catch up with a newer place saved on another device.
-    const p = audio.play(); if (p) p.catch(e => { if (e.name !== 'AbortError') say('Could not start playback: ' + e.message, 'error'); });
+    const p = audio.play(); if (p) p.catch(playFailed);
     syncFromServer();
   } else audio.pause();
 }
@@ -1375,8 +1383,18 @@ audio.addEventListener('ended', async () => {
   toast('Finished · marked played');
   if (currentView() === 'feed') loadFeed();
 });
-audio.addEventListener('error', () => {
-  if (state.current && audio.getAttribute('src')) say(state.current.preview ? 'This preview could not be played.' : 'This episode could not be played. Try downloading it first.', 'error');
+// A source that fails says why in plain words: the app's own answer (e.g. 'YouTube episodes need the YouTube Music
+// app') when it has one, never the browser's 'no supported source'. The audio error event owns that message.
+function playFailed(e) { if (e.name !== 'AbortError' && e.name !== 'NotSupportedError') say('Could not start playback: ' + e.message, 'error'); }
+audio.addEventListener('error', async () => {
+  const src = audio.getAttribute('src');
+  if (!state.current || !src) return;
+  let why = state.current.preview ? 'This preview could not be played.' : 'This episode could not be played. Try downloading it first.';
+  try {
+    const r = await fetch(src, { headers: { Range: 'bytes=0-0' } });
+    if (!r.ok) { const j = await r.json().catch(() => null); if (j && typeof j.error === 'string' && j.error) why = j.error; }
+  } catch (_) {}
+  if (audio.getAttribute('src') === src) say(why, 'error');
 });
 
 // Mini player: the bar opens the full player; play/pause and close are their own 44px+ targets and never open it.

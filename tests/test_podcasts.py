@@ -1623,3 +1623,20 @@ def test_discover_charts_follow_the_screen_time_zone(monkeypatch):
     P.write(lambda c: c.execute("DELETE FROM discover_cache WHERE key='region'"))
     src = (ROOT / 'app/discover.py').read_text()
     assert "'us,th'" not in src and "encodeURIComponent(VIEW_TZ)" in (ROOT / 'web/app.js').read_text()
+
+
+# ------------------------------------------------------------------ 0.5.3: first-run clarity for new owners
+
+
+def test_view_053_clear_play_errors_youtube_hint_and_exact_name_first():
+    js = (ROOT / 'web/app.js').read_text()
+    # a failed source shows the app's own reason (YouTube Music missing), never the browser's 'no supported source'
+    assert "function playFailed(e) { if (e.name !== 'AbortError' && e.name !== 'NotSupportedError')" in js
+    assert js.count('p.catch(playFailed)') == 2 and "headers: { Range: 'bytes=0-0' }" in js
+    assert "Could not start playback: ' + e.message, 'error'); });" not in js
+    # following a YouTube channel without YouTube Music says so at once (search results and Discover cards)
+    assert js.count('youtubeHint(r.show)') == 2 and "!st.youtube.installed" in js
+    # search: an exact show name comes first
+    assert "merged.sort((x, z) => (nameKey(z.title) === want) - (nameKey(x.title) === want))" in js
+    import youtube
+    assert youtube.MISSING.endswith('then try again.')
