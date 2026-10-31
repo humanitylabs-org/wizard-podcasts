@@ -1,7 +1,9 @@
 'use strict';
-/* Podcasts view (0.3): one feed of episodes from followed shows, show chips + one filter sheet on top, a shows button
+/* Podcasts view (0.3): one feed of episodes from followed shows, show chips + one filter sheet, a shows button
  * and a find button, and a mini player. Feed rows work like notifications: tap plays, the row's Skip dismisses it. Talks only to this app's documented relative API (api/...). Platform behaviour (Back root,
- * appearance, update holds, ducking Music) comes from the shared WizardApp client. */
+ * appearance, update holds, ducking Music) comes from the shared WizardApp client.
+ * Narrow windows (0.3.2) are thumb-first: the feed reads like a chat (newest at the bottom, list starts at the bottom)
+ * and every control sits in one bottom dock; wide windows keep newest on top with the controls above. */
 const $ = id => document.getElementById(id);
 const W = window.WizardApp && window.WizardApp.version === 1 ? window.WizardApp : null;
 const audio = $('audio');
@@ -50,6 +52,7 @@ function toast(text, undo) {
 }
 
 // ------------------------------------------------------------------ formatting (always the viewer's local time)
+/* pure:start (no DOM; tests/test_podcasts.py runs this block in node) */
 function clock(sec) {
   sec = Math.max(0, Math.floor(sec || 0));
   const h = Math.floor(sec / 3600), m = Math.floor(sec % 3600 / 60), s = sec % 60;
@@ -105,6 +108,18 @@ function postedFull(ts) {
   if (!ts) return '';
   return new Date(ts * 1000).toLocaleString(undefined, { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' });
 }
+// Feed episodes (server order) as date sections. Wide: as served (newest on top). Thumb-first: the same list run
+// backwards, so sections go older -> Today and, inside one, the newest episode is the lowest row.
+function feedGroups(episodes, now, thumb) {
+  const groups = [];
+  for (const e of thumb ? episodes.slice().reverse() : episodes) {
+    const g = dateGroup(e.published, now);
+    if (groups.at(-1)?.key !== g.key) groups.push({ ...g, eps: [] });
+    groups.at(-1).eps.push(e);
+  }
+  return groups;
+}
+/* pure:end */
 function el(tag, cls, text) {
   const n = document.createElement(tag);
   if (cls) n.className = cls;
@@ -156,27 +171,68 @@ function renderNotes(target, html) {
 // ------------------------------------------------------------------ navigation
 const VIEWS = ['feed', 'add', 'following', 'show', 'episode', 'player'];
 function currentView() { return state.stack.length ? state.stack.at(-1).view : 'feed'; }
+
+// Thumb-first (narrow window): styles.css sets --pc-thumb inside the app's narrow container query, so the script
+// and the layout always agree on one breakpoint (window width, never the device).
+function readThumb() { return getComputedStyle($('main')).getPropertyValue('--pc-thumb').trim() === '1'; }
+let thumb = readThumb();
+// The feed is anchored to its bottom: `gap` is how far the viewport's bottom sits above the newest row (0 = pinned).
+// Rows leaving, older pages arriving above, the dock growing: the bottom stays put.
+let gap = 0;
+function feedShown() { return thumb && currentView() === 'feed' && !$('view-feed').hidden; }
+function gapNow() { const m = $('main'); return Math.max(0, m.scrollHeight - m.scrollTop - m.clientHeight); }
+// Only the owner's own scrolling moves the gap: a scroll event that merely reports where the script put the list
+// (it arrives a frame later, after the dock may have grown) must not be read as a new position.
+let placed = -1;
+function setScroll(v) { const m = $('main'); m.scrollTop = v; placed = m.scrollTop; }
+function keepGap() { const m = $('main'); setScroll(m.scrollHeight - m.clientHeight - gap); }
+function toBottom() { setScroll($('main').scrollHeight); }
+$('main').addEventListener('scroll', () => {
+  if (!feedShown()) return;
+  if (Math.abs($('main').scrollTop - placed) < 1) return;
+  placed = -1;
+  const g = gapNow();
+  gap = g < 2 ? 0 : g;
+}, { passive: true });
+const bottomKeeper = new ResizeObserver(() => { if (feedShown()) keepGap(); });
+bottomKeeper.observe($('main'));
+bottomKeeper.observe($('feed-groups'));
+// Switching between narrow and wide re-lays the lists in that width's order.
+new ResizeObserver(() => {
+  const t = readThumb();
+  if (t === thumb) return;
+  thumb = t;
+  gap = 0;
+  const v = currentView();
+  if (v === 'feed') { renderChips(); renderFeed(); if (!thumb) $('main').scrollTop = 0; }
+  else if (v === 'following' && state.following) paintFollowing();
+  else if (v === 'add') paintResults();
+}).observe(document.querySelector('.pc-app'));
+
 function paint() {
   const v = currentView();
   for (const name of VIEWS) $('view-' + name).hidden = name !== v;
   $('top').hidden = v !== 'feed';
   document.querySelector('.pc-app').dataset.view = v;
-  if (v !== 'feed') $('main').scrollTop = 0;
+  if (v !== 'feed') $('main').scrollTop = thumb && (v === 'add' || v === 'following') ? $('main').scrollHeight : 0;
 }
 function openView(view, id) {
   if (state.stack.at(-1)?.view === view && state.stack.at(-1)?.id === id) return;
-  if (!state.stack.length) feedScroll = $('main').scrollTop;
+  if (!state.stack.length) { feedScroll = $('main').scrollTop; feedGap = gap; }
   state.stack.push({ view, id });
   paint();
   load(view, id);
 }
-let feedScroll = 0;
+let feedScroll = 0, feedGap = 0;
 function popView() {
   if (!state.stack.length) return false;
   state.stack.pop();
   paint();
   const top = state.stack.at(-1);
-  if (!top) { $('main').scrollTop = feedScroll; loadFeed(); } else load(top.view, top.id);
+  if (!top) {
+    if (thumb) { gap = feedGap; keepGap(); } else $('main').scrollTop = feedScroll;
+    loadFeed();
+  } else load(top.view, top.id);
   return true;
 }
 // A finishing action (mark played, unfollow) returns to the screen the owner came from: the previous view in the
@@ -191,7 +247,7 @@ function reload() { const top = state.stack.at(-1); return load(top ? top.view :
 async function load(view, id) {
   try {
     if (view === 'feed') return await loadFeed();
-    if (view === 'add') { $('search-input').focus({ preventScroll: true }); return; }
+    if (view === 'add') { $('search-input').focus({ preventScroll: true }); if (thumb) toBottom(); return; }
     if (view === 'following') return await loadFollowing();
     if (view === 'show') return renderShow(await api('api/shows/' + id + '?limit=' + PAGE));
     if (view === 'episode') return renderEpisode(await api('api/episodes/' + id));
@@ -238,7 +294,7 @@ function saveFilter() { try { localStorage.setItem(FILTER_KEY, JSON.stringify(fi
 function setFilter(change) {
   Object.assign(filter, change);
   saveFilter();
-  $('main').scrollTop = 0;
+  if (thumb) gap = 0; else $('main').scrollTop = 0;
   loadFeed();
 }
 function feedPath(offset = 0) {
@@ -250,9 +306,11 @@ function feedPath(offset = 0) {
   return 'api/feed?' + qs;
 }
 $('open-filter').onclick = () => {
+  // 'Newest' means newest where the eye starts: on top in a wide window, at the bottom (by the thumb) on a phone.
+  const order = thumb ? [['newest', 'Newest at bottom'], ['oldest', 'Oldest at bottom']] : [['newest', 'Newest first'], ['oldest', 'Oldest first']];
   const rows = [
     seg([['unplayed', 'Unplayed'], ['started', 'Started'], ['played', 'Played'], ['skipped', 'Skipped']], filter.state, v => setFilter({ state: v })),
-    seg([['newest', 'Newest first'], ['oldest', 'Oldest first']], filter.sort, v => setFilter({ sort: v }))];
+    seg(order, filter.sort, v => setFilter({ sort: v }))];
   // With one show chosen: clear everything it has waiting in one go (Undo in the toast).
   const show = filter.show != null && state.shows.find(s => s.id === filter.show);
   if (show && show.unplayed > 0) rows.push(sheetRow('Skip all from ' + (show.short_title || show.title), () => { closeSheet(); skipAll(show); }));
@@ -428,7 +486,13 @@ async function loadFollowing() {
   }
   for (const s of state.shows) if (!seen.has(s.feed_url)) rows.push({ ...s, followed: true });
   state.following = rows;
-  $('following-list').replaceChildren(...rows.map(followRow));
+  paintFollowing();
+}
+// Thumb-first: the show with the newest episode is the lowest row, and the list opens at the bottom.
+function paintFollowing() {
+  const rows = state.following || [];
+  $('following-list').replaceChildren(...(thumb ? rows.slice().reverse() : rows).map(followRow));
+  if (thumb) toBottom();
 }
 function followRow(s) {
   const li = el('li', 'pc-ep pc-show-row' + (s.followed ? '' : ' pc-played'));
@@ -536,15 +600,31 @@ function episodeRow(ep, { showShow = true } = {}) {
   }
   return li;
 }
-// Episodes in quiet date sections (Today, Yesterday, weekdays, Last week, months) in the server's order, so
-// Oldest first simply runs the sections the other way.
-function renderFeed() {
-  const now = new Date(), groups = [];
-  for (const e of state.feed) {
-    const g = dateGroup(e.published, now);
-    if (groups.at(-1)?.key !== g.key) groups.push({ ...g, eps: [] });
-    groups.at(-1).eps.push(e);
+// Thumb-first keeps the row the owner is looking at in place across a re-render (new episodes, Undo, More), or
+// stays pinned to the newest row when he was already at the bottom.
+// The anchor is the lowest row in view (the one nearest the thumb), so rows coming back or arriving above it push
+// the older rows up instead of moving what is under his finger.
+function feedAnchor() {
+  if (!feedShown() || gap === 0) return null;
+  const box = $('main').getBoundingClientRect();
+  for (const li of [...$('feed-groups').querySelectorAll('.pc-ep')].reverse()) {
+    const r = li.getBoundingClientRect();
+    if (r.top < box.bottom - 1) return { id: li.dataset.id, off: r.top - box.top };
   }
+  return null;
+}
+function restoreAnchor(a) {
+  if (!feedShown()) return;
+  const m = $('main');
+  const li = a && $('feed-groups').querySelector('.pc-ep[data-id="' + a.id + '"]');
+  if (li) { setScroll(m.scrollTop + li.getBoundingClientRect().top - m.getBoundingClientRect().top - a.off); gap = gapNow(); }
+  else keepGap();
+}
+// Episodes in quiet date sections (Today, Yesterday, weekdays, Last week, months) in the server's order, so
+// Oldest first simply runs the sections the other way (and thumb-first runs them bottom-up).
+function renderFeed() {
+  const anchor = feedAnchor();
+  const groups = feedGroups(state.feed, new Date(), thumb);
   const showShow = filter.show == null;
   $('feed-groups').replaceChildren(...groups.map(g => {
     const sec = el('section', 'pc-group');
@@ -557,6 +637,7 @@ function renderFeed() {
   $('feed-more').hidden = state.feed.length >= state.feedTotal;
   const empty = !state.feed.length;
   $('feed-empty').hidden = !empty;
+  if (thumb) restoreAnchor(anchor);
   if (!empty) return;
   const go = $('feed-empty-go');
   go.hidden = true;
@@ -643,6 +724,7 @@ async function episodeAction(ep, action, message) {
 
 // ------------------------------------------------------------------ find shows (podcasts and YouTube channels, one list)
 let searchSeq = 0, searchTimer = 0;
+let results = [];
 const isFeedUrl = t => /^https?:\/\//i.test(t) && !/youtube\.com|youtu\.be/i.test(t);
 async function runSearch(text) {
   const seq = ++searchSeq;
@@ -653,10 +735,17 @@ async function runSearch(text) {
     if (seq !== searchSeq) return;
     const a = r.results || [], y = r.youtube || [], merged = [];
     for (let i = 0; i < Math.max(a.length, y.length); i++) { if (a[i]) merged.push(a[i]); if (y[i]) merged.push(y[i]); }
-    $('search-results').replaceChildren(...merged.map(resultRow));
+    results = merged;
+    paintResults();
     note.hidden = merged.length > 0;
     note.textContent = merged.length ? '' : 'No shows found.';
+    if (thumb) toBottom();
   } catch (e) { if (seq === searchSeq) { note.hidden = true; say(e.message, 'error'); } }
+}
+// Thumb-first: the search box sits at the bottom like a composer and the best match is the row right above it.
+function paintResults() {
+  $('search-results').replaceChildren(...(thumb ? results.slice().reverse() : results).map(resultRow));
+  if (thumb) toBottom();
 }
 $('search-input').addEventListener('input', () => {
   clearTimeout(searchTimer);
@@ -969,7 +1058,7 @@ $('pl-mark').onclick = async () => {
 if (!W) {
   say('Wizard system functions are unavailable. Open Podcasts through Wizard.', 'error');
 } else {
-  W.ready({ name: 'wizard-podcasts', version: '0.3.1' });
+  W.ready({ name: 'wizard-podcasts', version: '0.3.2' });
   // Domain Back: close the nested view (find, shows, show, episode, player); at the feed, the core decides.
   W.back.register({ canGoBack: () => state.stack.length > 0, back: () => popView() });
 }
