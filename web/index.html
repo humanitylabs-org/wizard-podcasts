@@ -16,13 +16,18 @@
 </head>
 <body>
   <div class="wz-app pc-app">
-    <div class="pc-top" id="top">
-      <div id="chips" class="pc-chips" role="group" aria-label="Shows"></div>
-      <button type="button" class="pc-tool" id="open-filter" aria-label="Filter and order"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M7 12h10M10 17h4"/></svg><i class="pc-dot" id="filter-dot" hidden></i></button>
-      <button type="button" class="pc-tool pc-tool-wide" id="open-shows" aria-label="Your shows" title="Your shows"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="7" height="7" rx="1.6"/><rect x="13" y="4" width="7" height="7" rx="1.6"/><rect x="4" y="13" width="7" height="7" rx="1.6"/><rect x="13" y="13" width="7" height="7" rx="1.6"/></svg><span class="pc-tool-label">Shows</span></button>
-      <button type="button" class="pc-tool pc-tool-wide" id="open-add" aria-label="Find shows" title="Find shows"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg><span class="pc-tool-label">Find</span></button>
+    <nav class="pc-nav" id="nav" aria-label="Podcasts">
+      <div class="pc-navpair" role="group">
+        <button type="button" class="pc-nav-b" id="nav-feed" aria-current="page"><span class="pc-nav-i"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 6.5h14M5 12h14M5 17.5h9"/></svg></span><span class="pc-nav-l">My feed</span></button>
+        <button type="button" class="pc-nav-b" id="nav-discover"><span class="pc-nav-i"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><path d="m15.5 8.5-2 5-5 2 2-5z"/></svg></span><span class="pc-nav-l">Discover</span></button>
+      </div>
+      <button type="button" class="pc-nav-b pc-nav-filter" id="nav-filter" aria-haspopup="dialog"><span class="pc-nav-i"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M7 12h10M10 17h4"/></svg><i class="pc-dot" id="filter-dot" hidden></i></span><span class="pc-nav-l">Filters</span></button>
+    </nav>
+    <div class="pc-pillbar" id="pillbar" hidden>
+      <button type="button" class="pc-pill" id="filter-pill"><img id="pill-art" class="pc-pill-art" alt="" hidden><span class="pc-pill-name" id="pill-name"></span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7l10 10M17 7 7 17"/></svg></button>
     </div>
     <main class="wz-scroll" id="main">
+      <div class="pc-backrow" id="backrow" hidden><button type="button" class="pc-back" id="back-btn" aria-label="Back"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 5l-7 7 7 7"/></svg></button></div>
 
       <section id="view-feed" class="pc-view" aria-label="Episodes">
         <div id="feed-groups"></div>
@@ -33,17 +38,14 @@
         </div>
       </section>
 
-      <section id="view-add" class="pc-view" aria-label="Find shows" hidden>
+      <section id="view-discover" class="pc-view" aria-label="Discover" hidden>
+        <button type="button" class="pc-tool pc-gear" id="open-settings" aria-label="Settings"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></button>
         <form id="search-form" class="pc-search" autocomplete="off" role="search">
           <input id="search-input" class="wz-field" type="search" inputmode="search" enterkeyhint="search" maxlength="400"
                  aria-label="Search shows, or paste a feed address or @handle" placeholder="Search, or paste a feed or @handle">
-          <button type="button" class="pc-tool" id="open-settings" aria-label="Settings"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></button>
         </form>
         <p id="search-note" class="pc-note" hidden></p>
-        <ul class="wz-list" id="search-results" aria-label="Results"></ul>
-      </section>
-
-      <section id="view-following" class="pc-view" aria-label="Your shows" hidden>
+        <ul class="wz-list" id="search-results" aria-label="Results" hidden></ul>
         <ul class="wz-list" id="following-list" aria-label="Followed shows"></ul>
       </section>
 

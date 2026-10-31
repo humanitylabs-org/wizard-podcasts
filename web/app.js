@@ -1,9 +1,11 @@
 'use strict';
-/* Podcasts view (0.3): one feed of episodes from followed shows, show chips + one filter sheet, a shows button
- * and a find button, and a mini player. Feed rows work like notifications: tap plays, the row's Skip dismisses it. Talks only to this app's documented relative API (api/...). Platform behaviour (Back root,
- * appearance, update holds, ducking Music) comes from the shared WizardApp client.
- * Narrow windows (0.3.2) are thumb-first: the feed reads like a chat (newest at the bottom, list starts at the bottom)
- * and every control sits in one bottom dock; wide windows keep newest on top with the controls above. */
+/* Podcasts view (0.4): one nav bar with three buttons (My feed, Discover, Filters) at the top of a wide window and at
+ * the bottom of a phone. My feed is the episodes from followed shows; Filters narrows it (one show, state, order);
+ * Discover searches podcasts and YouTube channels and lists the followed shows. Feed rows work like notifications:
+ * tap plays, the row's Skip dismisses it. Talks only to this app's documented relative API (api/...). Platform
+ * behaviour (Back root, appearance, update holds, ducking Music) comes from the shared WizardApp client.
+ * Narrow windows are thumb-first: the feed reads like a chat (newest at the bottom, list starts at the bottom), the
+ * nav bar sits at the bottom with the mini player right above it; wide windows keep newest on top. */
 const $ = id => document.getElementById(id);
 const W = window.WizardApp && window.WizardApp.version === 1 ? window.WizardApp : null;
 const audio = $('audio');
@@ -11,12 +13,13 @@ const SPEEDS = [0.8, 1, 1.2, 1.5, 1.75, 2, 2.5, 3];
 const PAGE = 100;
 
 const state = {
-  stack: [],              // views above the feed: {view, id}
+  tab: 'feed',            // the root the nav bar shows: 'feed' | 'discover'
+  stack: [],              // pages opened above it: {view, id}
   settings: { speed: 1, skip_back: 15, skip_forward: 30, storage_cap_mb: 2048, refresh_minutes: 60, auto_download: true },
   shows: [],              // every followed show, newest episode first (from api/feed)
   feed: [], feedTotal: 0,
   show: null, showEpisodes: [],
-  following: null,        // the shows list as opened (unfollowed rows stay until it is left, so a refollow is one tap)
+  following: null,        // Discover's shows list as opened (unfollowed rows stay until Discover is left, so a refollow is one tap)
   episode: null,
   current: null,          // episode loaded in the player
   lastSaved: 0, savedPos: -1,
@@ -169,8 +172,9 @@ function renderNotes(target, html) {
 }
 
 // ------------------------------------------------------------------ navigation
-const VIEWS = ['feed', 'add', 'following', 'show', 'episode', 'player'];
-function currentView() { return state.stack.length ? state.stack.at(-1).view : 'feed'; }
+// Two roots (My feed, Discover) switched by the nav bar, and a stack of pages above them (show, episode, player).
+const VIEWS = ['feed', 'discover', 'show', 'episode', 'player'];
+function currentView() { return state.stack.length ? state.stack.at(-1).view : state.tab; }
 
 // Thumb-first (narrow window): styles.css sets --pc-thumb inside the app's narrow container query, so the script
 // and the layout always agree on one breakpoint (window width, never the device).
@@ -204,37 +208,77 @@ new ResizeObserver(() => {
   thumb = t;
   gap = 0;
   const v = currentView();
-  if (v === 'feed') { renderChips(); renderFeed(); if (!thumb) $('main').scrollTop = 0; }
-  else if (v === 'following' && state.following) paintFollowing();
-  else if (v === 'add') paintResults();
+  if (v === 'feed') { renderFeed(); if (!thumb) $('main').scrollTop = 0; }
+  else if (v === 'discover') paintDiscover();
 }).observe(document.querySelector('.pc-app'));
 
 function paint() {
   const v = currentView();
   for (const name of VIEWS) $('view-' + name).hidden = name !== v;
-  $('top').hidden = v !== 'feed';
-  document.querySelector('.pc-app').dataset.view = v;
-  if (v !== 'feed') $('main').scrollTop = thumb && (v === 'add' || v === 'following') ? $('main').scrollHeight : 0;
+  const app = document.querySelector('.pc-app');
+  app.dataset.view = v;
+  $('backrow').hidden = !state.stack.length;
+  for (const [tab, b] of [['feed', $('nav-feed')], ['discover', $('nav-discover')]]) {
+    if (state.tab === tab) b.setAttribute('aria-current', 'page'); else b.removeAttribute('aria-current');
+  }
+  // Filters narrows My feed only: it rests (disabled, same place) everywhere else so the bar never shifts.
+  $('nav-filter').disabled = v !== 'feed';
+  paintFilterState();
+  if (v !== 'feed' && v !== 'discover') $('main').scrollTop = 0;
 }
+// Where each root was left, so coming back to it (tab or Back) lands on the same rows.
+let feedScroll = 0, feedGap = 0, discoverScroll = 0;
+function saveRoot() {
+  if (state.stack.length) return;
+  if (state.tab === 'feed') { feedScroll = $('main').scrollTop; feedGap = gap; }
+  else discoverScroll = $('main').scrollTop;
+}
+async function showRoot() {
+  if (state.tab === 'feed') {
+    if (thumb) { gap = feedGap; keepGap(); } else $('main').scrollTop = feedScroll;
+    return loadFeed().catch(e => say(e.message, 'error'));
+  }
+  await loadDiscover();
+  if (currentView() === 'discover') $('main').scrollTop = discoverScroll;
+}
+// The nav bar: one tap switches roots from anywhere (pages above are dropped); tapping the root already shown
+// jumps to its newest rows.
+function setTab(tab) {
+  if (tab === state.tab && !state.stack.length) {
+    if (tab === 'feed') { if (thumb) { gap = 0; keepGap(); } else $('main').scrollTop = 0; }
+    return;
+  }
+  saveRoot();
+  const from = state.tab;
+  state.stack = [];
+  state.tab = tab;
+  if (from === 'discover' && tab !== 'discover') state.following = null;
+  paint();
+  if (tab === 'discover' && from !== 'discover') { $('main').scrollTop = 0; loadDiscover(); }
+  else showRoot();
+}
+$('nav-feed').onclick = () => setTab('feed');
+$('nav-discover').onclick = () => setTab('discover');
 function openView(view, id) {
   if (state.stack.at(-1)?.view === view && state.stack.at(-1)?.id === id) return;
-  if (!state.stack.length) { feedScroll = $('main').scrollTop; feedGap = gap; }
+  saveRoot();
   state.stack.push({ view, id });
   paint();
   load(view, id);
 }
-let feedScroll = 0, feedGap = 0;
+// Back: close the page on top; from Discover go to My feed; at My feed the shell decides (never trapped).
 function popView() {
-  if (!state.stack.length) return false;
-  state.stack.pop();
-  paint();
-  const top = state.stack.at(-1);
-  if (!top) {
-    if (thumb) { gap = feedGap; keepGap(); } else $('main').scrollTop = feedScroll;
-    loadFeed();
-  } else load(top.view, top.id);
-  return true;
+  if (state.stack.length) {
+    state.stack.pop();
+    paint();
+    const top = state.stack.at(-1);
+    if (top) load(top.view, top.id); else showRoot();
+    return true;
+  }
+  if (state.tab !== 'feed') { setTab('feed'); return true; }
+  return false;
 }
+$('back-btn').onclick = () => popView();
 // A finishing action (mark played, unfollow) returns to the screen the owner came from: the previous view in the
 // app, or, when he arrived straight here (deep link from a chat), the screen before the app.
 function finish(message, undo) {
@@ -242,13 +286,12 @@ function finish(message, undo) {
   if (W && W.nav.back()) return;
   if (message) toast(message, undo);
 }
-function reload() { const top = state.stack.at(-1); return load(top ? top.view : 'feed', top?.id); }
+function reload() { return load(currentView(), state.stack.at(-1)?.id); }
 
 async function load(view, id) {
   try {
     if (view === 'feed') return await loadFeed();
-    if (view === 'add') { $('search-input').focus({ preventScroll: true }); if (thumb) toBottom(); return; }
-    if (view === 'following') return await loadFollowing();
+    if (view === 'discover') return await loadDiscover();
     if (view === 'show') return renderShow(await api('api/shows/' + id + '?limit=' + PAGE));
     if (view === 'episode') return renderEpisode(await api('api/episodes/' + id));
     if (view === 'player') return renderPlayer();
@@ -305,71 +348,55 @@ function feedPath(offset = 0) {
   if (offset) qs.set('offset', String(offset));
   return 'api/feed?' + qs;
 }
-$('open-filter').onclick = () => {
-  // 'Newest' means newest where the eye starts: on top in a wide window, at the bottom (by the thumb) on a phone.
-  const order = thumb ? [['newest', 'Newest at bottom'], ['oldest', 'Oldest at bottom']] : [['newest', 'Newest first'], ['oldest', 'Oldest first']];
-  const rows = [
-    seg([['unplayed', 'Unplayed'], ['started', 'Started'], ['played', 'Played'], ['skipped', 'Skipped']], filter.state, v => setFilter({ state: v })),
-    seg(order, filter.sort, v => setFilter({ sort: v }))];
-  // With one show chosen: clear everything it has waiting in one go (Undo in the toast).
-  const show = filter.show != null && state.shows.find(s => s.id === filter.show);
-  if (show && show.unplayed > 0) rows.push(sheetRow('Skip all from ' + (show.short_title || show.title), () => { closeSheet(); skipAll(show); }));
-  sheet('Filter', ...rows);
-};
-
-// ------------------------------------------------------------------ show chips
-let chipSig = '';
-function chip(label, show) {
+// Filters: one show (or all), state and order. Picks apply at once and the sheet stays open to combine them.
+function filterChip(show) {
   const b = el('button', 'pc-chip' + (show ? '' : ' pc-chip-all'));
   b.type = 'button';
+  const label = show ? show.short_title || show.title : 'All shows';
   if (show) {
     if (show.artwork) { const img = el('img', 'pc-chip-art'); img.alt = ''; img.loading = 'lazy'; img.src = show.artwork; b.append(img); }
     else { const ph = el('span', 'pc-chip-art pc-chip-ph', (label || '?').slice(0, 1)); ph.setAttribute('aria-hidden', 'true'); b.append(ph); }
     b.dataset.show = show.id;
     b.title = show.title;
-    holdable(b, () => showSheet(show));
-    b.onclick = () => { if (b.__held) { b.__held = false; return; } if (filter.show === show.id) showSheet(show); else setFilter({ show: show.id }); };
-  } else {
-    b.dataset.all = '1';
-    b.onclick = () => setFilter({ show: null });
-  }
+  } else b.dataset.all = '1';
+  b.setAttribute('aria-pressed', String(show ? filter.show === show.id : filter.show == null));
   b.append(el('span', 'pc-chip-name', label));
+  b.onclick = () => { setFilter({ show: show ? show.id : null }); openFilters(); };
   return b;
 }
-// Long-press (touch) or right-click (mouse) opens a chip's show actions.
-function holdable(node, fn) {
-  let timer = 0, x = 0, y = 0;
-  const clear = () => { clearTimeout(timer); timer = 0; };
-  node.addEventListener('pointerdown', e => {
-    if (e.pointerType === 'mouse') return;
-    x = e.clientX; y = e.clientY;
-    timer = setTimeout(() => { timer = 0; node.__held = true; fn(); }, 500);
-  });
-  node.addEventListener('pointermove', e => { if (timer && Math.hypot(e.clientX - x, e.clientY - y) > 10) clear(); });
-  for (const t of ['pointerup', 'pointercancel', 'pointerleave']) node.addEventListener(t, clear);
-  node.addEventListener('contextmenu', e => { e.preventDefault(); if (!node.__held) fn(); });
+function openFilters() {
+  if (currentView() !== 'feed') return;
+  const keep = $('sheet-body').querySelector('.pc-showgrid')?.scrollTop || 0;
+  const grid = el('div', 'pc-showgrid');
+  grid.setAttribute('role', 'group'); grid.setAttribute('aria-label', 'Shows');
+  grid.append(filterChip(null), ...state.shows.map(filterChip));
+  // 'Newest' means newest where the eye starts: on top in a wide window, at the bottom (by the thumb) on a phone.
+  const order = thumb ? [['newest', 'Newest at bottom'], ['oldest', 'Oldest at bottom']] : [['newest', 'Newest first'], ['oldest', 'Oldest first']];
+  const rows = [grid,
+    seg([['unplayed', 'Unplayed'], ['started', 'Started'], ['played', 'Played'], ['skipped', 'Skipped']], filter.state, v => setFilter({ state: v })),
+    seg(order, filter.sort, v => setFilter({ sort: v }))];
+  // With one show chosen: clear everything it has waiting in one go (Undo in the toast).
+  const show = filter.show != null && state.shows.find(s => s.id === filter.show);
+  if (show && show.unplayed > 0) rows.push(sheetRow('Skip all from ' + (show.short_title || show.title), () => { closeSheet(); skipAll(show); }));
+  sheet('Filters', ...rows);
+  grid.scrollTop = keep;
+  if (!keep) grid.querySelector('[aria-pressed="true"]')?.scrollIntoView({ block: 'nearest' });
 }
-function renderChips() {
-  const row = $('chips');
-  const sig = JSON.stringify(state.shows.map(s => [s.id, s.short_title, s.artwork]));
-  if (sig !== chipSig) {
-    const first = !chipSig;
-    chipSig = sig;
-    const left = row.scrollLeft;
-    row.replaceChildren(chip('All', null), ...state.shows.map(s => chip(s.short_title || s.title, s)));
-    row.scrollLeft = left;
-    if (first) requestAnimationFrame(() => row.querySelector('[data-show="' + filter.show + '"]')?.scrollIntoView({ block: 'nearest', inline: 'center' }));
-  }
-  for (const b of row.children) b.setAttribute('aria-pressed', String(b.dataset.all ? filter.show == null : +b.dataset.show === filter.show));
-  $('filter-dot').hidden = filter.state === 'unplayed' && filter.sort === 'newest';
+$('nav-filter').onclick = openFilters;
+// The filter in force, visible without opening the sheet: a dot on Filters, and the chosen show as one pill
+// (tap clears it).
+function paintFilterState() {
+  $('filter-dot').hidden = filter.show == null && filter.state === 'unplayed' && filter.sort === 'newest';
+  const show = filter.show != null && state.shows.find(s => s.id === filter.show);
+  $('pillbar').hidden = !show || currentView() !== 'feed';
+  if (!show) return;
+  $('pill-name').textContent = show.short_title || show.title;
+  art($('pill-art'), show.artwork);
+  $('filter-pill').setAttribute('aria-label', 'Showing only ' + show.title + '. Show all');
 }
-// A mouse wheel scrolls the chip row sideways on desktop.
-$('chips').addEventListener('wheel', e => {
-  const row = $('chips');
-  if (Math.abs(e.deltaY) > Math.abs(e.deltaX) && row.scrollWidth > row.clientWidth) { row.scrollLeft += e.deltaY; e.preventDefault(); }
-}, { passive: false });
+$('filter-pill').onclick = () => setFilter({ show: null });
 
-// One show's actions: its full episode list, auto-download, unfollow (second tap confirms).
+// One show's actions (the show page's ⋯): skip all, auto-download, unfollow (second tap confirms).
 function showSheet(show) {
   const auto = el('label', 'pc-sheet-row pc-switch');
   const box = el('input'); box.type = 'checkbox'; box.checked = !!show.auto_download;
@@ -383,7 +410,6 @@ function showSheet(show) {
     unfollow(show);
   }, 'pc-danger');
   const rows = [];
-  if (currentView() !== 'show') rows.push(sheetRow('All episodes', () => { closeSheet(); openView('show', show.id); }));
   const waiting = state.shows.find(s => s.id === show.id)?.unplayed ?? show.unplayed ?? 0;
   if (waiting > 0) rows.push(sheetRow('Skip all from ' + (show.short_title || show.title), () => { closeSheet(); skipAll(show); }));
   rows.push(auto, unsub);
@@ -472,8 +498,19 @@ function swipeable(li, onSkip) {
   li.addEventListener('pointercancel', end);
 }
 
-// ------------------------------------------------------------------ your shows (follow / unfollow, open a show)
-$('open-shows').onclick = () => { state.following = null; openView('following'); };
+// ------------------------------------------------------------------ discover: followed shows (empty box) or search results
+const searching = () => !!$('search-input').value.trim();
+async function loadDiscover() {
+  paintDiscover();
+  if (!searching()) { try { await loadFollowing(); } catch (e) { say(e.message, 'error'); } }
+}
+function paintDiscover() {
+  const on = searching();
+  $('following-list').hidden = on;
+  $('search-results').hidden = !on;
+  if (!on) $('search-note').hidden = true;
+  if (on) paintResults(); else paintFollowing();
+}
 async function loadFollowing() {
   const d = await api('api/feed?limit=1');
   state.shows = d.shows || [];
@@ -488,8 +525,10 @@ async function loadFollowing() {
   state.following = rows;
   paintFollowing();
 }
-// Thumb-first: the show with the newest episode is the lowest row, and the list opens at the bottom.
+// Thumb-first: the show with the newest episode is the lowest row, right above the search box, and the list opens
+// at the bottom.
 function paintFollowing() {
+  if (currentView() !== 'discover' || searching()) return;
   const rows = state.following || [];
   $('following-list').replaceChildren(...(thumb ? rows.slice().reverse() : rows).map(followRow));
   if (thumb) toBottom();
@@ -508,7 +547,7 @@ function followRow(s) {
   main.append(el('b', 'pc-clamp', s.title), meta);
   open.append(img, main);
   open.disabled = !s.followed;
-  open.onclick = () => { if (open.__held) { open.__held = false; return; } if (s.followed) openView('show', s.id); };
+  open.onclick = () => { if (s.followed) openView('show', s.id); };
   const btn = el('button', 'pc-follow');
   btn.type = 'button';
   const paintBtn = () => { btn.textContent = s.followed ? 'Following' : 'Follow'; btn.setAttribute('aria-pressed', String(s.followed)); btn.setAttribute('aria-label', (s.followed ? 'Unfollow ' : 'Follow ') + s.title); };
@@ -531,7 +570,6 @@ function followRow(s) {
     } catch (e) { say(e.message, 'error'); }
     finally { btn.disabled = false; }
   };
-  holdable(open, () => s.followed && showSheet(s));
   li.append(open, btn);
   return li;
 }
@@ -547,7 +585,7 @@ async function loadFeed(append = false) {
   if (filter.show != null && !state.shows.some(s => s.id === filter.show)) { filter.show = null; saveFilter(); return loadFeed(); }
   state.feed = append ? state.feed.concat(data.episodes) : data.episodes;
   state.feedTotal = data.total;
-  renderChips();
+  paintFilterState();
   renderFeed();
   if (data.now_playing && !state.current) loadIntoPlayer(data.now_playing, false);
 }
@@ -643,7 +681,7 @@ function renderFeed() {
   go.hidden = true;
   if (!state.shows.length) {
     $('feed-empty-text').textContent = 'Follow a show to see its episodes here.';
-    go.hidden = false; go.textContent = 'Find shows'; go.onclick = () => openView('add');
+    go.hidden = false; go.textContent = 'Discover shows'; go.onclick = () => setTab('discover');
   } else if (filter.show != null) {
     $('feed-empty-text').textContent = filter.state === 'played' ? 'Nothing played yet.' : filter.state === 'started' ? 'Nothing started.' : filter.state === 'skipped' ? 'Nothing skipped.' : 'Nothing new.';
     go.hidden = false; go.textContent = 'All episodes'; go.onclick = () => openView('show', filter.show);
@@ -722,7 +760,7 @@ async function episodeAction(ep, action, message) {
   catch (e) { say(e.message, 'error'); $('ep-download').disabled = false; }
 }
 
-// ------------------------------------------------------------------ find shows (podcasts and YouTube channels, one list)
+// search: podcasts and YouTube channels in one list
 let searchSeq = 0, searchTimer = 0;
 let results = [];
 const isFeedUrl = t => /^https?:\/\//i.test(t) && !/youtube\.com|youtu\.be/i.test(t);
@@ -747,9 +785,13 @@ function paintResults() {
   $('search-results').replaceChildren(...(thumb ? results.slice().reverse() : results).map(resultRow));
   if (thumb) toBottom();
 }
+let wasSearching = false;
 $('search-input').addEventListener('input', () => {
   clearTimeout(searchTimer);
   const text = $('search-input').value.trim();
+  // Emptying the box brings the followed shows back (fresh, so a show just followed from results is in it).
+  if (!text) { ++searchSeq; results = []; wasSearching = false; loadDiscover(); return; }
+  if (!wasSearching) { wasSearching = true; results = []; paintDiscover(); }
   if (text.length < 3 || /^https?:\/\//i.test(text)) return;
   searchTimer = setTimeout(() => runSearch(text), 600);
 });
@@ -763,7 +805,7 @@ $('search-form').onsubmit = async event => {
     say('Loading feed…', 'note');
     const r = await api('api/subscribe', { url: text });
     say('');
-    $('search-input').value = '';
+    $('search-input').value = ''; wasSearching = false; results = [];
     toast(r.already_subscribed ? 'Already following ' + r.show.title : 'Following ' + r.show.title);
     openView('show', r.show.id);
   } catch (e) { say(e.message, 'error'); }
@@ -799,9 +841,8 @@ function resultRow(item) {
   li.append(main, btn);
   return li;
 }
-$('open-add').onclick = () => openView('add');
 
-// ------------------------------------------------------------------ settings (from the find screen)
+// ------------------------------------------------------------------ settings (the gear in Discover)
 $('open-settings').onclick = async () => {
   try {
     const [s, st] = await Promise.all([api('api/settings'), api('api/status')]);
@@ -1058,15 +1099,15 @@ $('pl-mark').onclick = async () => {
 if (!W) {
   say('Wizard system functions are unavailable. Open Podcasts through Wizard.', 'error');
 } else {
-  W.ready({ name: 'wizard-podcasts', version: '0.3.3' });
-  // Domain Back: close the nested view (find, shows, show, episode, player); at the feed, the core decides.
-  W.back.register({ canGoBack: () => state.stack.length > 0, back: () => popView() });
+  W.ready({ name: 'wizard-podcasts', version: '0.4.0' });
+  // Domain Back: close the page on top (show, episode, player), then Discover -> My feed; at My feed the core decides.
+  W.back.register({ canGoBack: () => state.stack.length > 0 || state.tab !== 'feed', back: () => popView() });
 }
 document.addEventListener('visibilitychange', async () => {
   if (document.hidden) { beaconProgress(); return; }
   // Back in front: pick up position changes made on another device while paused here.
   if (state.current && audio.paused) { await syncFromServer(); paintPlayer(); }
-  if (!['add', 'following'].includes(currentView())) reload();
+  if (currentView() !== 'discover') reload();
 });
 window.addEventListener('pagehide', beaconProgress);
 
@@ -1077,5 +1118,5 @@ window.addEventListener('pagehide', beaconProgress);
   try { await loadFeed(); } catch (e) { say(e.message, 'error'); }
   if (qs.get('episode')) openView('episode', +qs.get('episode'));
   else if (qs.get('show')) openView('show', +qs.get('show'));
-  else if (qs.get('tab') === 'add') openView('add');
+  else if (['discover', 'add'].includes(qs.get('tab'))) setTab('discover');
 })();
