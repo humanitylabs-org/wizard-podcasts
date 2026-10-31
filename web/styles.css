@@ -170,6 +170,33 @@ html.wz-hosted .pc-mini { background: color-mix(in srgb, var(--wz-base) 60%, tra
 .pc-toast-btn { min-height: 44px; padding: 0 14px; border-radius: var(--r-tile); color: var(--accent); font-weight: 700; }
 @container wz-app (min-width: 760px) { .pc-toast { left: auto; width: 420px; } }
 
+/* thumb-first (narrow windows, the same breakpoint as the wide labels): content only on top, every control in one
+ * bottom dock (mini player stacked right above the chips + filter + Shows + Find), lists read bottom-up like a chat.
+ * The script reads --pc-thumb so its order and this layout switch at exactly the same width. */
+@container wz-app (width < 700px) {
+  #main { --pc-thumb: 1; overflow-anchor: none; }
+  .pc-app > #main { order: 1; }
+  .pc-app > #status { order: 2; }
+  .pc-app > .pc-dock { order: 3; }
+  .pc-app > .pc-top { order: 4; padding: 6px 6px calc(6px + env(safe-area-inset-bottom, 0px)) 0; border-top: 1px solid var(--line);
+    background: color-mix(in srgb, var(--canvas) 86%, transparent); backdrop-filter: blur(18px); -webkit-backdrop-filter: blur(18px); }
+  html.wz-hosted .pc-app > .pc-top { background: color-mix(in srgb, var(--wz-base) 60%, transparent); }
+  .pc-app:has(#mini:not([hidden])) > .pc-top { border-top-color: transparent; }
+  .pc-app[data-view="feed"] > .pc-dock { padding-bottom: 0; }
+  .pc-app[data-view="feed"] > #main { padding-top: calc(var(--wos-cutout, 0px) + 4px); }
+  /* lists sit on the bottom edge when short; More (older) is on top */
+  #view-feed:not([hidden]), #view-following:not([hidden]), #view-add:not([hidden]) { display: flex; flex-direction: column; justify-content: flex-end; min-height: 100%; }
+  #view-feed > .pc-more { order: -1; }
+  .pc-none { padding: 0 0 32px; }
+  /* find: the search box is a composer at the bottom, results above it (best match lowest) */
+  .pc-app[data-view="add"] > #main { padding-bottom: 0; }
+  #search-results { order: 1; }
+  #search-note { order: 2; }
+  .pc-search { order: 3; position: sticky; bottom: 0; z-index: 3; margin: 0 calc(-1 * var(--wz-gutter, 12px)); padding: 8px 6px 8px var(--wz-gutter, 12px);
+    border-top: 1px solid var(--line); background: color-mix(in srgb, var(--canvas) 86%, transparent); backdrop-filter: blur(18px); -webkit-backdrop-filter: blur(18px); }
+  html.wz-hosted .pc-search { background: color-mix(in srgb, var(--wz-base) 60%, transparent); }
+}
+
 /* the one sheet: filter segments, show actions, settings */
 #sheet-body { display: grid; gap: 10px; }
 .pc-seg { display: flex; padding: 3px; border-radius: var(--r-pill); background: var(--fill); border: 1px solid var(--line); }

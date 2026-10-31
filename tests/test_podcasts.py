@@ -916,7 +916,9 @@ def test_migration_adds_skip_columns_to_an_old_database(tmp_path, monkeypatch):
     assert P.q('SELECT COUNT(*) n FROM shows', one=True)['n'] == 1
 
 
-def test_skip_hides_from_feed_frees_downloads_and_undo_restores():
+def test_skip_hides_from_feed_frees_downloads_and_undo_restores(monkeypatch):
+    # Hold the live download worker: it would otherwise pick up (and fail) the seeded 'queued' row before the skip.
+    monkeypatch.setattr(P, '_download', lambda r: time.sleep(0.05))
     now = int(time.time())
     t0 = now + 4 * 10 ** 7  # newer than anything else in the shared test database
     folder = P.EPISODES_DIR / 'skiptest'
@@ -1055,3 +1057,50 @@ def test_youtube_follow_survives_a_flaky_feed_answer(connector):
         assert show['feed_url'] == youtube.feed_url(cid) and show['episodes'] == 2
     finally:
         P.unsubscribe(show['id'])
+
+
+# ------------------------------------------------------------------ 0.3.2: thumb-first phone layout
+
+def test_view_thumb_first_phone_order_and_bottom_dock():
+    """Narrow windows read bottom-up: the feed's date sections run older -> Today with the newest episode as the
+    last row, and the chips + filter + Shows + Find sit in the bottom dock under the mini player; wide stays as served."""
+    import re
+    import shutil
+    import subprocess
+    js = (ROOT / 'web/app.js').read_text()
+    css = (ROOT / 'web/styles.css').read_text()
+    # one breakpoint: the thumb layout is the exact complement of the wide-label query, and the script reads it from CSS
+    assert '@container wz-app (min-width: 700px)' in css and '@container wz-app (width < 700px)' in css
+    narrow = css.split('@container wz-app (width < 700px)')[1].split('\n}\n')[0]
+    assert '--pc-thumb: 1' in narrow and "getPropertyValue('--pc-thumb')" in js
+    order = {sel: int(n) for sel, n in re.findall(r'\.pc-app > ([#.][\w-]+) \{ order: (\d+)', narrow)}
+    assert order['#main'] < order['#status'] < order['.pc-dock'] < order['.pc-top'], order  # controls last, mini above them
+    assert 'safe-area-inset-bottom' in narrow and 'position: sticky; bottom: 0' in narrow  # bar above the inset; find composer
+    html = (ROOT / 'web/index.html').read_text()
+    dock = html.split('id="dock"')[1].split('</footer>')[0]
+    assert 'id="mini"' in dock and 'id="toast"' in dock  # toast floats above the dock, never over the bar
+    for control in ('id="chips"', 'id="open-filter"', 'id="open-shows"', 'id="open-add"'):
+        assert control in html.split('id="top"')[1].split('<main')[0], control
+    assert "'Newest at bottom'" in js and "'Newest first'" in js
+    node = shutil.which('node')
+    if not node:
+        import pytest
+        pytest.skip('node not installed')
+    pure = js.split('/* pure:start')[1].split('/* pure:end */')[0].split('*/', 1)[1]
+    now = 1793500000  # a Saturday, mid-day UTC
+    script = pure + f'''
+const now = new Date({now} * 1000), D = 86400;
+// server order, newest first: two today, one yesterday, one 40 days ago
+const eps = [{{id: 4, published: {now} - 600}}, {{id: 3, published: {now} - 3600}}, {{id: 2, published: {now} - D}}, {{id: 1, published: {now} - 40 * D}}];
+const flat = g => g.map(x => [x.key, x.eps.map(e => e.id)]);
+console.log(JSON.stringify({{wide: flat(feedGroups(eps, now, false)), phone: flat(feedGroups(eps, now, true))}}));
+'''
+    out = subprocess.run([node, '-e', script], capture_output=True, text=True, timeout=30, env={'TZ': 'UTC', 'PATH': '/usr/bin:/bin'})
+    assert out.returncode == 0, out.stderr
+    got = json.loads(out.stdout)
+    wide = [k for k, _ in got['wide']]
+    phone = [k for k, _ in got['phone']]
+    assert wide[0] == 'today' and wide[1] == 'yesterday' and got['wide'][0][1] == [4, 3]
+    assert phone == wide[::-1] and phone[-1] == 'today' and phone[-2] == 'yesterday'
+    assert got['phone'][-1][1] == [3, 4]  # newest episode is the very last row
+    assert [i for _, ids in got['phone'] for i in ids] == [1, 2, 3, 4]
