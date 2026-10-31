@@ -20,7 +20,7 @@ from podcasts import Problem  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 APP_ID = 'wizard-podcasts'
-VERSION = '0.5.1'
+VERSION = '0.5.2'
 PORT = int(os.environ.get('PORT', '9207'))
 PREFIX = '/' + APP_ID
 STATIC_TYPES = {'.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8',
@@ -241,6 +241,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send(200, P.list_shows())
             if path == '/api/discover':
                 qs = self.query()
+                if qs.get('tz'):
+                    D.note_timezone(qs.get('tz'))
                 return self.send(200, D.discover(_qint(qs.get('limit'), 20), qs.get('cursor')))
             if path == '/api/discover/audio':
                 src = D.preview_source(self.query().get('feed_url', ''))

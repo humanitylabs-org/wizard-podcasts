@@ -33,8 +33,34 @@ from netfetch import FetchError
 MB = 1024 * 1024
 TTL = int(os.environ.get('PODCASTS_DISCOVER_TTL_HOURS', '12')) * 3600
 MATCH_TTL = 30 * 86400
-COUNTRIES = [c.strip().lower() for c in os.environ.get('PODCASTS_DISCOVER_COUNTRIES', 'us,th').split(',') if c.strip()]
-COUNTRY_NAMES = {'us': 'the US', 'th': 'Thailand', 'gb': 'the UK', 'ca': 'Canada', 'au': 'Australia', 'de': 'Germany'}
+# Popular charts: the US plus the owner's own country, learned from the time zone his screen reports (0.5.2; no
+# country is baked in). PODCASTS_DISCOVER_COUNTRIES (e.g. 'us,gb') overrides both.
+COUNTRIES_ENV = [c.strip().lower() for c in os.environ.get('PODCASTS_DISCOVER_COUNTRIES', '').split(',') if c.strip()]
+COUNTRY_NAMES = {
+    'us': 'the US', 'gb': 'the UK', 'ca': 'Canada', 'au': 'Australia', 'nz': 'New Zealand', 'ie': 'Ireland',
+    'de': 'Germany', 'at': 'Austria', 'ch': 'Switzerland', 'fr': 'France', 'be': 'Belgium', 'nl': 'the Netherlands',
+    'es': 'Spain', 'pt': 'Portugal', 'it': 'Italy', 'se': 'Sweden', 'no': 'Norway', 'dk': 'Denmark', 'fi': 'Finland',
+    'pl': 'Poland', 'cz': 'Czechia', 'gr': 'Greece', 'tr': 'Turkey', 'il': 'Israel', 'ae': 'the UAE', 'sa': 'Saudi Arabia',
+    'za': 'South Africa', 'ng': 'Nigeria', 'ke': 'Kenya', 'eg': 'Egypt', 'in': 'India', 'pk': 'Pakistan', 'th': 'Thailand',
+    'vn': 'Vietnam', 'my': 'Malaysia', 'sg': 'Singapore', 'id': 'Indonesia', 'ph': 'the Philippines', 'jp': 'Japan',
+    'kr': 'South Korea', 'tw': 'Taiwan', 'hk': 'Hong Kong', 'cn': 'China', 'mx': 'Mexico', 'br': 'Brazil',
+    'ar': 'Argentina', 'cl': 'Chile', 'co': 'Colombia', 'pe': 'Peru', 'ro': 'Romania', 'hu': 'Hungary', 'ua': 'Ukraine'}
+TZ_COUNTRY = {
+    'Europe/London': 'gb', 'Europe/Dublin': 'ie', 'Europe/Berlin': 'de', 'Europe/Vienna': 'at', 'Europe/Zurich': 'ch',
+    'Europe/Paris': 'fr', 'Europe/Brussels': 'be', 'Europe/Amsterdam': 'nl', 'Europe/Madrid': 'es', 'Atlantic/Canary': 'es',
+    'Europe/Lisbon': 'pt', 'Europe/Rome': 'it', 'Europe/Stockholm': 'se', 'Europe/Oslo': 'no', 'Europe/Copenhagen': 'dk',
+    'Europe/Helsinki': 'fi', 'Europe/Warsaw': 'pl', 'Europe/Prague': 'cz', 'Europe/Athens': 'gr', 'Europe/Istanbul': 'tr',
+    'Europe/Bucharest': 'ro', 'Europe/Budapest': 'hu', 'Europe/Kyiv': 'ua', 'Europe/Kiev': 'ua', 'Asia/Jerusalem': 'il',
+    'Asia/Tel_Aviv': 'il', 'Asia/Dubai': 'ae', 'Asia/Riyadh': 'sa', 'Africa/Johannesburg': 'za', 'Africa/Lagos': 'ng',
+    'Africa/Nairobi': 'ke', 'Africa/Cairo': 'eg', 'Asia/Kolkata': 'in', 'Asia/Calcutta': 'in', 'Asia/Karachi': 'pk',
+    'Asia/Bangkok': 'th', 'Asia/Ho_Chi_Minh': 'vn', 'Asia/Saigon': 'vn', 'Asia/Kuala_Lumpur': 'my', 'Asia/Singapore': 'sg',
+    'Asia/Jakarta': 'id', 'Asia/Makassar': 'id', 'Asia/Manila': 'ph', 'Asia/Tokyo': 'jp', 'Asia/Seoul': 'kr',
+    'Asia/Taipei': 'tw', 'Asia/Hong_Kong': 'hk', 'Asia/Shanghai': 'cn', 'Australia/Sydney': 'au', 'Australia/Melbourne': 'au',
+    'Australia/Brisbane': 'au', 'Australia/Perth': 'au', 'Australia/Adelaide': 'au', 'Pacific/Auckland': 'nz',
+    'America/Toronto': 'ca', 'America/Vancouver': 'ca', 'America/Edmonton': 'ca', 'America/Winnipeg': 'ca',
+    'America/Halifax': 'ca', 'America/Mexico_City': 'mx', 'America/Sao_Paulo': 'br', 'America/Argentina/Buenos_Aires': 'ar',
+    'America/Buenos_Aires': 'ar', 'America/Santiago': 'cl', 'America/Bogota': 'co', 'America/Lima': 'pe'}
+REGION_KEY = 'region'
 ITUNES_GAP = float(os.environ.get('PODCASTS_ITUNES_GAP', '2.5'))  # seconds between iTunes API calls (~20/min allowed)
 STALE_DAYS = 180       # a show with nothing new in half a year is not recommended
 FOR_YOU_SHARE = 7      # of every 10 cards: 7 'for you', 3 popular/new
@@ -611,7 +637,7 @@ def build(force=False):
         # 1. charts (two calls + one batched lookup): something to show within seconds
         _state['stage'] = 'charts'
         chart = {}
-        for c in COUNTRIES:
+        for c in countries():
             for rank, i in enumerate(chart_ids(c)):
                 chart.setdefault(i, []).append((c, rank))
         for i, s in itunes_details(list(chart)).items():
@@ -712,6 +738,29 @@ def build(force=False):
         _state['building'] = False
         _state['stage'] = ''
         _build_lock.release()
+
+
+def countries():
+    """Chart storefronts for 'Popular in …': the override, else the US plus the owner's own country when known."""
+    if COUNTRIES_ENV:
+        return COUNTRIES_ENV
+    region = cache_get(REGION_KEY, 10 ** 12)[0]
+    return ['us'] + ([region] if region in COUNTRY_NAMES and region != 'us' else [])
+
+
+def note_timezone(tz):
+    """The screen reports its time zone (Intl, e.g. 'Asia/Bangkok'); a new country rebuilds the charts soon.
+    Zones that name no country (UTC, unknown) change nothing."""
+    cc = TZ_COUNTRY.get(str(tz or '').strip()[:64])
+    if not cc or cache_get(REGION_KEY, 10 ** 12)[0] == cc:
+        return False
+    cache_put(REGION_KEY, cc)
+    if not COUNTRIES_ENV:
+        pool = load_pool()
+        if pool.get('built_at'):
+            save_pool(dict(pool, retry_at=now()))
+        wake.set()
+    return True
 
 
 def due(pool):

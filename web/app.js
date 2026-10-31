@@ -78,6 +78,8 @@ function day(ts) {
 }
 function startOfDay(d) { const x = new Date(d); x.setHours(0, 0, 0, 0); return x; }
 function daysBetween(later, earlier) { return Math.round((startOfDay(later) - startOfDay(earlier)) / 86400000); }
+// the screen's time zone: Discover's 'Popular in <your country>' charts follow it (no country is baked in)
+const VIEW_TZ = (() => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone || ''; } catch (_) { return ''; } })();
 const WEEK_START = (() => {  // 0 = Sunday … 6 = Saturday, from the viewer's locale; Monday when unknown
   try { const l = new Intl.Locale(navigator.language); const w = l.getWeekInfo ? l.getWeekInfo() : l.weekInfo; if (w && w.firstDay) return w.firstDay % 7; } catch (_) {}
   return 1;
@@ -648,7 +650,7 @@ async function discFetch(fresh) {
   disc.loading = true;
   clearTimeout(disc.poll);
   try {
-    const d = await api('api/discover?limit=' + DISC_PAGE + '&cursor=' + encodeURIComponent(fresh ? '0' : disc.cursor));
+    const d = await api('api/discover?limit=' + DISC_PAGE + '&cursor=' + encodeURIComponent(fresh ? '0' : disc.cursor) + '&tz=' + encodeURIComponent(VIEW_TZ));
     if (seq !== disc.seq) return;
     const have = new Set(fresh ? [] : disc.items.map(i => i.feed_url));
     const add = (d.items || []).filter(i => !have.has(i.feed_url));
