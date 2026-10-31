@@ -39,7 +39,7 @@ WATCH = 'https://www.youtube.com/watch?v='
 SOURCES = [tuple(x.split('=', 1)) for x in os.environ.get(
     'PODCASTS_YOUTUBE_SOURCES', 'wizard-youtube-music=http://wizard-youtube-music:9206').split(',') if '=' in x]
 CONNECTOR_TIMEOUT = float(os.environ.get('PODCASTS_YOUTUBE_TIMEOUT', '900'))
-MISSING = ('YouTube episodes need the YouTube Music app. Get it from the App Store (free), then tap Download again.')
+MISSING = ('YouTube episodes need the YouTube Music app. Get it from the App Store (free), then try again.')
 BLOCKED = ("YouTube refused this Wizard's network. Open YouTube Music and set up its home relay, then tap Download again.")
 
 
