@@ -1293,7 +1293,10 @@ def test_view_041_gear_nav_and_search_sheet():
     assert html.count('id="open-settings"') == 1 and 'position: absolute; top: 6px; right: -6px' not in css
     narrow = css.split('@container wz-app (width < 700px)')[1].split('\n}\n')[0]
     assert 'padding-top: 48px' not in narrow and 'flex-direction: column' not in narrow.split('.pc-nav-b')[1].split('}')[0]
-    assert '.pc-nav-b:not([aria-current="page"]) .pc-nav-l' in narrow and 'justify-content: center' in narrow
+    # 0.5.2: phone nav = three full-width equal cells, every label shown (no centred pill with space around it)
+    assert 'grid-template-columns: repeat(3, minmax(0, 1fr))' in narrow and '.pc-navpair { display: contents; }' in narrow
+    assert '.pc-nav-b:not([aria-current="page"]) .pc-nav-l' not in narrow and 'clip-path' not in narrow
+    assert 'justify-content: center' not in narrow.split('.pc-app > .pc-nav {')[1].split('}')[0]
     sheet = js.split('function openFilters()')[1].split('\n}\n')[0]
     assert sheet.index('searchField()') < sheet.index('grid,')
     assert "placeholder: 'Search episodes'" in js and "qs.set('q', filter.q)" in js
@@ -1309,9 +1312,9 @@ def test_view_042_phone_nav_no_double_safe_area():
     css = (ROOT / 'web/styles.css').read_text()
     narrow = css.split('@container wz-app (width < 700px)')[1].split('\n}\n')[0]
     assert 'calc(4px + env(safe-area-inset-bottom' not in css
-    assert 'padding: 4px 12px max(4px, env(safe-area-inset-bottom, 0px));' in narrow
+    assert 'padding: 4px 4px max(4px, env(safe-area-inset-bottom, 0px));' in narrow
     assert 'html.wz-hosted:not([data-presentation="immersive"]) .pc-app > .pc-nav { padding-bottom: 0; }' in narrow
-    assert '.pc-nav-b { isolation: isolate; gap: 6px; min-width: 48px; min-height: 44px;' in narrow  # 44px hit areas kept
+    assert 'min-width: 0; width: 100%; min-height: 48px;' in narrow  # 48px hit areas
 
 
 # ------------------------------------------------------------------ 0.5.0: Discover feed with taste learning
@@ -1600,3 +1603,23 @@ def test_failed_chart_source_is_retried_within_the_hour(monkeypatch):
         assert D.chart_ids('us') == [1] and len(calls) == 2
     finally:
         _cleanup_disc()
+
+
+# ------------------------------------------------------------------ 0.5.2: no country baked in
+
+
+def test_discover_charts_follow_the_screen_time_zone(monkeypatch):
+    """'Popular in …' uses the US plus the owner's own country, learned from the time zone the screen reports;
+    UTC or an unknown zone adds nothing; the env override wins."""
+    monkeypatch.setattr(D, 'COUNTRIES_ENV', [])
+    P.write(lambda c: c.execute("DELETE FROM discover_cache WHERE key='region'"))
+    assert D.countries() == ['us']
+    assert D.note_timezone('UTC') is False and D.note_timezone('Mars/Base') is False and D.countries() == ['us']
+    assert D.note_timezone('Europe/Berlin') is True and D.countries() == ['us', 'de']
+    assert D.note_timezone('Europe/Berlin') is False  # unchanged: no rebuild
+    assert D.note_timezone('America/New_York') is False and D.countries() == ['us', 'de']  # US zones: nothing to add
+    monkeypatch.setattr(D, 'COUNTRIES_ENV', ['gb'])
+    assert D.countries() == ['gb']
+    P.write(lambda c: c.execute("DELETE FROM discover_cache WHERE key='region'"))
+    src = (ROOT / 'app/discover.py').read_text()
+    assert "'us,th'" not in src and "encodeURIComponent(VIEW_TZ)" in (ROOT / 'web/app.js').read_text()

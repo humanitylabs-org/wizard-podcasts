@@ -1,7 +1,7 @@
 ---
 name: wizard-podcasts
 description: Use when the owner asks about podcasts - following a show, new episodes, what he was listening to, or episode notes.
-version: 0.5.1
+version: 0.5.2
 author: Humanity Labs
 license: GPL-3.0-only
 platforms: [linux, macos]
