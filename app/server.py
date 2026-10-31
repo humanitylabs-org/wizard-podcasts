@@ -15,11 +15,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import netfetch  # noqa: E402
 import youtube  # noqa: E402
 import podcasts as P  # noqa: E402
+import discover as D  # noqa: E402
 from podcasts import Problem  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 APP_ID = 'wizard-podcasts'
-VERSION = '0.4.2'
+VERSION = '0.5.0'
 PORT = int(os.environ.get('PORT', '9207'))
 PREFIX = '/' + APP_ID
 STATIC_TYPES = {'.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8',
@@ -83,6 +84,11 @@ TOOLS = [
      'inputSchema': {'type': 'object', 'properties': {'episode_id': {'type': 'integer'}, 'played': {'type': 'boolean'},
                                                       'skipped': {'type': 'boolean'},
                                                       'in_inbox': {'type': 'boolean'}}, 'required': ['episode_id']}},
+    {'name': 'podcasts_discover', 'description': "Shows the owner might like (the Discover feed), best first: about 70% similar to shows he follows or thumbed up (reason 'Like <show>', 'Guest on <show>', 'More from <author>') and 30% popular ('Popular in <genre or country>'). Never a show he follows or thumbed down. Each item: title, author, feed_url (pass to podcasts_subscribe to follow), reason, latest episode {title, published unix seconds}, taste (his thumb: 1, -1 or 0). Page with cursor = the previous answer's next_cursor. building=true while the first list is still being gathered (try again in a minute).",
+     'inputSchema': {'type': 'object', 'properties': {'limit': {'type': 'integer', 'minimum': 1, 'maximum': 50}, 'cursor': {'type': 'string'}}}},
+    {'name': 'podcasts_taste', 'description': "The owner's show taste for Discover. Without value: a summary (liked shows, avoided shows, liked and avoided genres). With value: set his thumb on one show by feed_url (a Discover item or followed show) or show_id: 1 = thumbs up (more like it), -1 = thumbs down (never recommended again; its genre and similar shows count less), 0 = clear. Only on the owner's word. Returns the new summary.",
+     'inputSchema': {'type': 'object', 'properties': {'feed_url': {'type': 'string'}, 'show_id': {'type': 'integer'},
+                                                      'value': {'type': 'integer', 'enum': [1, -1, 0]}}}},
 ]
 
 
@@ -119,6 +125,12 @@ def call_tool(name, a):
             raise Problem(400, 'Send played and/or skipped (true or false).')
         ib = a.get('in_inbox')
         return P.mark(_int(a.get('episode_id'), 'episode_id'), played, ib if isinstance(ib, bool) else None, skipped)
+    if name == 'podcasts_discover':
+        return D.discover(a.get('limit') or 20, a.get('cursor'))
+    if name == 'podcasts_taste':
+        if a.get('value') is None:
+            return D.summary()
+        return D.set_taste(a.get('feed_url'), a.get('show_id'), a.get('value'))
     return None
 
 
@@ -221,12 +233,20 @@ class Handler(BaseHTTPRequestHandler):
             if path == '/healthz':
                 return self.send(200, {'ok': True, 'app': APP_ID, 'version': VERSION})
             if path == '/api/status':
-                return self.send(200, P.status())
+                return self.send(200, dict(P.status(), discover=D.status()))
             if path == '/api/search':
                 qs = self.query()
                 return self.send(200, P.search_directory(qs.get('q', ''), int(qs.get('limit', '20') or 20)))
             if path == '/api/shows':
                 return self.send(200, P.list_shows())
+            if path == '/api/discover':
+                qs = self.query()
+                return self.send(200, D.discover(_qint(qs.get('limit'), 20), qs.get('cursor')))
+            if path == '/api/discover/audio':
+                src = D.preview_source(self.query().get('feed_url', ''))
+                return self.proxy({'enclosure_url': src['url'], 'mime': ''})
+            if path == '/api/taste':
+                return self.send(200, D.summary())
             if path == '/api/feed':
                 qs = self.query()
                 return self.send(200, P.feed(qs.get('show_id'), qs.get('state'), qs.get('sort'), _qint(qs.get('limit'), 100), _qint(qs.get('offset'), 0), qs.get('q')))
@@ -404,6 +424,8 @@ class Handler(BaseHTTPRequestHandler):
             if path == '/api/subscribe':
                 ad = body.get('auto_download')
                 return self.send(200, P.subscribe(body.get('url') or body.get('feed_url'), ad if isinstance(ad, bool) else None))
+            if path == '/api/shows/taste':
+                return self.send(200, D.set_taste(body.get('feed_url'), body.get('show_id'), body.get('value')))
             if path == '/api/refresh':
                 return self.send(200, P.refresh_all(force=True))
             if path == '/api/settings':
@@ -417,7 +439,7 @@ class Handler(BaseHTTPRequestHandler):
                 if action == 'refresh':
                     return self.send(200, P.refresh_show(sid))
                 if action == 'unsubscribe':
-                    return self.send(200, P.unsubscribe(sid))
+                    return self.send(200, P.unsubscribe(sid, body.get('undo') is True))
                 if action == 'skip-all':
                     sk = body.get('skipped', True)
                     return self.send(200, P.skip_all(sid, sk, body.get('episode_ids')))
@@ -477,6 +499,7 @@ def main():
     wait_for_data()
     P.init()
     P.start_workers()
+    D.start()
     Server((os.environ.get('BIND', '0.0.0.0'), PORT), Handler).serve_forever()
 
 

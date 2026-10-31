@@ -19,7 +19,6 @@ const state = {
   shows: [],              // every followed show, newest episode first (from api/feed)
   feed: [], feedTotal: 0,
   show: null, showEpisodes: [],
-  following: null,        // Discover's shows list as opened (unfollowed rows stay until Discover is left, so a refollow is one tap)
   episode: null,
   current: null,          // episode loaded in the player
   lastSaved: 0, savedPos: -1,
@@ -44,11 +43,16 @@ function say(text, kind = '') {
   if (kind === 'error') setTimeout(() => { if (s.textContent === text) s.textContent = ''; }, 6000);
 }
 let toastTimer = 0;
-function toast(text, undo) {
+// A toast says what happened, with Undo and at most one more action (e.g. thumbs down in the player offers Unfollow).
+function toast(text, undo, extra) {
   $('toast-text').textContent = text;
   const b = $('toast-undo');
   b.hidden = !undo;
   b.onclick = undo ? async () => { $('toast').hidden = true; try { await undo(); } catch (e) { say(e.message, 'error'); } } : null;
+  const a = $('toast-act');
+  a.hidden = !extra;
+  a.textContent = extra ? extra.label : '';
+  a.onclick = extra ? async () => { $('toast').hidden = true; try { await extra.run(); } catch (e) { say(e.message, 'error'); } } : null;
   $('toast').hidden = false;
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => { $('toast').hidden = true; }, 5000);
@@ -154,6 +158,9 @@ function icon(name) {
     warn: '<path d="M12 4 3 20h18z"/><path d="M12 10v4.5M12 17.2v.3"/>',
     skip: '<path d="M7 7l10 10M17 7 7 17"/>',
     unskip: '<path d="M9 7 5 11l4 4"/><path d="M5 11h9a5 5 0 0 1 0 10h-2"/>',
+    // thumbs: Lucide icons (ISC licence, see NOTICE.md)
+    up: '<path d="M7 10v12"/><path d="M15 5.88 14 10h5.83a2 2 0 0 1 1.92 2.56l-2.33 8A2 2 0 0 1 17.5 22H4a2 2 0 0 1-2-2v-8a2 2 0 0 1 2-2h2.76a2 2 0 0 0 1.79-1.11L12 2a3.13 3.13 0 0 1 3 3.88Z"/>',
+    down: '<path d="M17 14V2"/><path d="M9 18.12 10 14H4.17a2 2 0 0 1-1.92-2.56l2.33-8A2 2 0 0 1 6.5 2H20a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2h-2.76a2 2 0 0 0-1.79 1.11L12 22a3.13 3.13 0 0 1-3-3.88Z"/>',
   };
   const s = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
   s.setAttribute('viewBox', '0 0 24 24'); s.setAttribute('aria-hidden', 'true');
@@ -288,15 +295,15 @@ async function showRoot() {
 function setTab(tab) {
   if (tab === state.tab && !state.stack.length) {
     if (tab === 'feed') { if (thumb) { gap = 0; keepGap(); } else $('main').scrollTop = 0; }
+    if (tab === 'discover' && !searching()) { if (!thumb) $('main').scrollTop = 0; discFetch(true); }  // re-tap: fresh picks
     return;
   }
   saveRoot();
   const from = state.tab;
   state.stack = [];
   state.tab = tab;
-  if (from === 'discover' && tab !== 'discover') state.following = null;
   paint();
-  if (tab === 'discover' && from !== 'discover') { $('main').scrollTop = 0; loadDiscover(); }
+  if (tab === 'discover' && from !== 'discover') { $('main').scrollTop = 0; loadDiscover().then(() => { if (!thumb && currentView() === 'discover') $('main').scrollTop = discoverScroll; }); }
   else showRoot();
 }
 $('nav-feed').onclick = () => setTab('feed');
@@ -421,7 +428,32 @@ function filterChip(show) {
   b.setAttribute('aria-pressed', String(show ? filter.show === show.id : filter.show == null));
   b.append(el('span', 'pc-chip-name', label));
   b.onclick = () => { setFilter({ show: show ? show.id : null }); openFilters(); };
-  return b;
+  if (!show) return b;
+  // 0.5.0: managing followed shows lives here (and on the show page): each row picks the filter, and a small Unfollow
+  // sits at its end; the row stays (dimmed, 'Follow') until the sheet is opened again, so a slip is one tap to undo.
+  const row = el('div', 'pc-srow');
+  const x = el('button', 'pc-srow-x', 'Unfollow');
+  x.type = 'button';
+  x.setAttribute('aria-label', 'Unfollow ' + show.title);
+  x.onclick = async () => {
+    x.disabled = true;
+    try {
+      if (row.classList.contains('pc-off')) {
+        const r = await api('api/subscribe', { url: show.feed_url, auto_download: show.auto_download });
+        Object.assign(show, { id: r.show.id });
+        row.classList.remove('pc-off'); x.textContent = 'Unfollow'; x.setAttribute('aria-label', 'Unfollow ' + show.title); b.disabled = false;
+      } else {
+        await api('api/shows/' + show.id + '/unsubscribe', {});
+        if (state.current?.show_id === show.id) unloadPlayer();
+        if (filter.show === show.id) { filter.show = null; saveFilter(); }
+        row.classList.add('pc-off'); x.textContent = 'Follow'; x.setAttribute('aria-label', 'Follow ' + show.title); b.disabled = true;
+      }
+      loadFeed().catch(() => {});
+    } catch (e) { say(e.message, 'error'); }
+    finally { x.disabled = false; }
+  };
+  row.append(b, x);
+  return row;
 }
 let stateSeg = null;
 function searchField() {
@@ -446,7 +478,7 @@ function paintStateSeg() { if (stateSeg) for (const b of stateSeg.children) b.se
 function openFilters() {
   if (currentView() !== 'feed') return;
   const keep = $('sheet-body').querySelector('.pc-showgrid')?.scrollTop || 0;
-  const grid = el('div', 'pc-showgrid');
+  const grid = el('div', 'pc-showgrid pc-showlist');
   grid.setAttribute('role', 'group'); grid.setAttribute('aria-label', 'Shows');
   grid.append(filterChip(null), ...state.shows.map(filterChip));
   // 'Newest' means newest where the eye starts: on top in a wide window, at the bottom (by the thumb) on a phone.
@@ -587,80 +619,191 @@ function swipeable(li, onSkip) {
   li.addEventListener('pointercancel', end);
 }
 
-// ------------------------------------------------------------------ discover: followed shows (empty box) or search results
+// ------------------------------------------------------------------ discover: recommendations (empty box) or search results
+// 0.5.0: Discover is a feed of shows he might like, ranked on the box from what he follows, thumbs, hears through and
+// skips (api/discover). Each card: artwork, name, one reason line, the newest episode; thumbs up/down, Follow, and a tap
+// previews the newest episode in the player without following. Thumb-first: the best card is the lowest one, right
+// above the search box; reaching the far end (top on a phone, bottom on a wide window) loads more.
 const searching = () => !!$('search-input').value.trim();
+const disc = { items: [], cursor: '0', done: false, loading: false, at: 0, seq: 0, poll: 0 };
+const DISC_PAGE = 20;
 async function loadDiscover() {
   paintDiscover();
-  if (!searching()) { try { await loadFollowing(); } catch (e) { say(e.message, 'error'); } }
+  if (searching()) return;
+  if (!disc.items.length || Date.now() - disc.at > 10 * 60000) await discFetch(true);
 }
 function paintDiscover() {
   const on = searching();
-  $('following-list').hidden = on;
+  $('disc-list').hidden = on;
   $('search-results').hidden = !on;
   if (!on) $('search-note').hidden = true;
-  if (on) paintResults(); else paintFollowing();
+  if (on) { $('disc-more').hidden = true; $('disc-note').hidden = true; paintResults(); }
+  else renderDiscover();
 }
-async function loadFollowing() {
-  const d = await api('api/feed?limit=1');
-  state.shows = d.shows || [];
-  const byUrl = new Map(state.shows.map(s => [s.feed_url, s]));
-  const rows = [], seen = new Set();
-  for (const s of state.following || []) {  // keep rows unfollowed here, so following again is one tap
-    seen.add(s.feed_url);
-    const cur = byUrl.get(s.feed_url);
-    rows.push(cur ? { ...cur, followed: true } : { ...s, followed: false });
-  }
-  for (const s of state.shows) if (!seen.has(s.feed_url)) rows.push({ ...s, followed: true });
-  state.following = rows;
-  paintFollowing();
+// Fresh = start over (open, re-tap Discover, still gathering); otherwise the next page goes on the far end.
+async function discFetch(fresh) {
+  if (disc.loading && !fresh) return;
+  if (!fresh && (disc.done || disc.cursor == null)) return;
+  const seq = ++disc.seq;
+  disc.loading = true;
+  clearTimeout(disc.poll);
+  try {
+    const d = await api('api/discover?limit=' + DISC_PAGE + '&cursor=' + encodeURIComponent(fresh ? '0' : disc.cursor));
+    if (seq !== disc.seq) return;
+    const have = new Set(fresh ? [] : disc.items.map(i => i.feed_url));
+    const add = (d.items || []).filter(i => !have.has(i.feed_url));
+    disc.items = fresh ? add : disc.items.concat(add);
+    disc.cursor = d.next_cursor; disc.done = d.next_cursor == null; disc.at = Date.now();
+    for (const i of disc.items) tasteOf.set(i.feed_url, i.taste || 0);
+    // the first list is still being gathered on the box: show what there is and look again shortly
+    if (d.building && disc.items.length < DISC_PAGE) disc.poll = setTimeout(() => { if (currentView() === 'discover' && !searching()) discFetch(true); }, 5000);
+    disc.building = !!d.building;
+    if (fresh) renderDiscover(); else appendDiscover(add);
+  } catch (e) { if (seq === disc.seq) say(e.message, 'error'); }
+  finally { if (seq === disc.seq) disc.loading = false; }
 }
-// Thumb-first: the show with the newest episode is the lowest row, right above the search box, and the list opens
-// at the bottom.
-function paintFollowing() {
+function renderDiscover() {
   if (currentView() !== 'discover' || searching()) return;
-  const rows = state.following || [];
-  $('following-list').replaceChildren(...(thumb ? rows.slice().reverse() : rows).map(followRow));
+  const list = disc.items.map(cardRow);
+  $('disc-list').replaceChildren(...(thumb ? list.reverse() : list));
+  paintDiscoverEnd();
   if (thumb) toBottom();
 }
-function followRow(s) {
-  const li = el('li', 'pc-ep pc-show-row' + (s.followed ? '' : ' pc-played'));
-  const open = el('button', 'wz-row pc-ep-open');
+// Another page: wide windows add it below; a phone adds it above (older picks further from the thumb) and keeps the
+// cards in view where they were.
+function appendDiscover(items) {
+  if (currentView() !== 'discover' || searching()) return;
+  const rows = items.map(cardRow);
+  const m = $('main');
+  if (thumb) {
+    const before = m.scrollHeight;
+    $('disc-list').prepend(...rows.reverse());
+    setScroll(m.scrollTop + (m.scrollHeight - before));
+  } else $('disc-list').append(...rows);
+  paintDiscoverEnd();
+}
+function paintDiscoverEnd() {
+  const empty = !disc.items.length;
+  $('disc-more').hidden = empty || disc.done;
+  $('disc-note').hidden = !empty;
+  $('disc-note').textContent = disc.loading || disc.building ? 'Finding shows for you…' : 'Nothing to recommend yet. Follow a show or two first.';
+}
+$('disc-more').onclick = () => discFetch(false);
+// Reaching the far end of the list loads the next page on its own.
+new IntersectionObserver(es => { if (es.some(e => e.isIntersecting) && currentView() === 'discover' && !searching() && disc.items.length) discFetch(false); },
+  { root: $('main'), rootMargin: '400px 0px' }).observe($('disc-more'));
+
+// His thumb on each show (Discover cards, followed shows, the player): 1, -1 or 0.
+const tasteOf = new Map();
+async function setTaste(feedUrl, value) {
+  const r = await api('api/shows/taste', { feed_url: feedUrl, value });
+  tasteOf.set(feedUrl, r.value);
+  const s = state.shows.find(x => x.feed_url === feedUrl); if (s) s.taste = r.value;
+  const c = disc.items.find(x => x.feed_url === feedUrl); if (c) c.taste = r.value;
+  return r;
+}
+function thumbButton(dir, item, onPick) {
+  const b = el('button', 'pc-thumb');
+  b.type = 'button'; b.dataset.v = String(dir);
+  b.append(icon(dir > 0 ? 'up' : 'down'));
+  b.setAttribute('aria-label', (dir > 0 ? 'More like ' : 'Less like ') + item.title);
+  b.title = dir > 0 ? 'More like this' : 'Not for me';
+  b.setAttribute('aria-pressed', String((tasteOf.get(item.feed_url) ?? item.taste ?? 0) === dir));
+  b.onclick = onPick;
+  return b;
+}
+function cardRow(item) {
+  const li = el('li', 'pc-card');
+  li.dataset.feed = item.feed_url;
+  if (state.current?.preview && state.current.feed_url === item.feed_url) li.classList.add('pc-current');
+  const open = el('button', 'pc-card-open');
   open.type = 'button';
   let img;
-  if (s.artwork) { img = el('img', 'pc-art pc-art-row'); img.alt = ''; img.loading = 'lazy'; img.src = s.artwork; }
-  else { img = el('span', 'pc-art pc-art-row pc-chip-ph', (s.title || '?').slice(0, 1)); img.setAttribute('aria-hidden', 'true'); }
-  const main = el('span', 'wz-main');
-  const meta = el('small', 'pc-meta');
-  meta.append(el('span', 'pc-meta-when', s.latest ? posted(s.latest) : ''));
-  if (s.latest) meta.title = postedFull(s.latest);
-  main.append(el('b', 'pc-clamp', s.title), meta);
-  open.append(img, main);
-  open.disabled = !s.followed;
-  open.onclick = () => { if (s.followed) openView('show', s.id); };
-  const btn = el('button', 'pc-follow');
-  btn.type = 'button';
-  const paintBtn = () => { btn.textContent = s.followed ? 'Following' : 'Follow'; btn.setAttribute('aria-pressed', String(s.followed)); btn.setAttribute('aria-label', (s.followed ? 'Unfollow ' : 'Follow ') + s.title); };
-  paintBtn();
-  btn.onclick = async () => {
-    btn.disabled = true;
+  if (item.artwork) { img = el('img', 'pc-art pc-art-card'); img.alt = ''; img.loading = 'lazy'; img.referrerPolicy = 'no-referrer'; img.src = item.artwork; }
+  else { img = el('span', 'pc-art pc-art-card pc-chip-ph', (item.title || '?').slice(0, 1)); img.setAttribute('aria-hidden', 'true'); }
+  const text = el('span', 'pc-card-text');
+  text.append(el('b', 'pc-card-name', item.title), el('small', 'pc-reason', item.reason));
+  const lt = item.latest;
+  if (lt && lt.title) {
+    const ep = el('span', 'pc-card-ep', lt.title);
+    // a channel page only says '3 days ago': show the day, not a made-up time
+    const when = el('small', 'pc-card-when', lt.approx ? (lt.published ? dateGroup(lt.published).label : '') : posted(lt.published));
+    if (lt.published) when.title = postedFull(lt.published);
+    text.append(ep, when);
+  }
+  open.append(img, text);
+  open.setAttribute('aria-label', 'Preview ' + item.title + (lt && lt.title ? ': ' + lt.title : ''));
+  open.disabled = !(lt && lt.playable);
+  open.onclick = () => previewShow(item);
+  const acts = el('div', 'pc-card-acts');
+  const up = thumbButton(1, item, async () => {
+    const v = up.getAttribute('aria-pressed') === 'true' ? 0 : 1;
+    up.disabled = true;
+    try { await setTaste(item.feed_url, v); up.setAttribute('aria-pressed', String(v === 1)); down.setAttribute('aria-pressed', 'false'); }
+    catch (e) { say(e.message, 'error'); }
+    finally { up.disabled = false; }
+  });
+  const down = thumbButton(-1, item, () => dislikeCard(li, item));
+  const follow = el('button', 'pc-follow');
+  follow.type = 'button';
+  let showId = null;
+  const paintFollow = on => { follow.textContent = on ? 'Following' : 'Follow'; follow.setAttribute('aria-pressed', String(on)); follow.setAttribute('aria-label', (on ? 'Unfollow ' : 'Follow ') + item.title); };
+  paintFollow(false);
+  follow.onclick = async () => {
+    follow.disabled = true;
     try {
-      if (s.followed) {
-        await api('api/shows/' + s.id + '/unsubscribe', {});
-        if (state.current?.show_id === s.id) unloadPlayer();
-        if (filter.show === s.id) { filter.show = null; saveFilter(); }
-        s.followed = false;
+      if (showId) {  // a second tap takes the follow back (not a 'less like this')
+        await api('api/shows/' + showId + '/unsubscribe', { undo: true });
+        if (state.current?.show_id === showId) unloadPlayer();
+        showId = null; paintFollow(false);
       } else {
-        const r = await api('api/subscribe', { url: s.feed_url, auto_download: s.auto_download });
-        Object.assign(s, { id: r.show.id, followed: true });
+        const r = await api('api/subscribe', { url: item.feed_url });
+        showId = r.show.id; paintFollow(true);
+        toast('Following ' + r.show.title);
       }
-      li.classList.toggle('pc-played', !s.followed);
-      open.disabled = !s.followed;
-      paintBtn();
     } catch (e) { say(e.message, 'error'); }
-    finally { btn.disabled = false; }
+    finally { follow.disabled = false; }
   };
-  li.append(open, btn);
+  acts.append(up, down, follow);
+  li.append(open, acts);
   return li;
+}
+// Thumbs down: the card leaves in place; Undo puts it back where it was.
+async function dislikeCard(li, item) {
+  li.classList.add('pc-busy');
+  try { await setTaste(item.feed_url, -1); }
+  catch (e) { li.classList.remove('pc-busy'); say(e.message, 'error'); return; }
+  const at = disc.items.indexOf(item);
+  disc.items = disc.items.filter(x => x !== item);
+  if (state.current?.preview && state.current.feed_url === item.feed_url && audio.paused) unloadPlayer();
+  toast('Not for you', async () => {
+    await setTaste(item.feed_url, 0);
+    item.taste = 0;
+    disc.items.splice(Math.max(0, Math.min(at, disc.items.length)), 0, item);
+    renderDiscoverKeep();
+  });
+  const drop = () => { li.remove(); paintDiscoverEnd(); };
+  if (matchMedia('(prefers-reduced-motion: reduce)').matches) return drop();
+  li.style.height = li.offsetHeight + 'px';
+  requestAnimationFrame(() => { li.classList.add('pc-gone'); li.style.height = '0px'; });
+  setTimeout(drop, 220);
+}
+// Re-render without moving what is under the thumb (phone: keep the distance to the bottom).
+function renderDiscoverKeep() {
+  if (currentView() !== 'discover' || searching()) return;
+  const m = $('main'), fromEnd = m.scrollHeight - m.scrollTop, top = m.scrollTop;
+  const list = disc.items.map(cardRow);
+  $('disc-list').replaceChildren(...(thumb ? list.reverse() : list));
+  paintDiscoverEnd();
+  setScroll(thumb ? m.scrollHeight - fromEnd : top);
+}
+// Preview: the show's newest episode plays in the usual player without following it; nothing is saved.
+function previewShow(item) {
+  if (state.current?.preview && state.current.feed_url === item.feed_url) { togglePlay(); return; }
+  const lt = item.latest || {};
+  playEpisode({ id: 'preview:' + item.feed_url, preview: true, feed_url: item.feed_url, show_id: null, title: lt.title || item.title,
+    show_title: item.title, artwork: item.artwork, published: lt.published || 0, duration: 0, position: 0, position_at: 0, played: false,
+    audio: 'api/discover/audio?feed_url=' + encodeURIComponent(item.feed_url) });
 }
 
 // ------------------------------------------------------------------ feed
@@ -1030,8 +1173,10 @@ function playEpisode(ep) {
   markCurrentRow();
 }
 function markCurrentRow() {
-  for (const n of document.querySelectorAll('.pc-ep.pc-current')) n.classList.remove('pc-current');
-  if (state.current) for (const n of document.querySelectorAll('.pc-ep[data-id="' + state.current.id + '"]')) n.classList.add('pc-current');
+  for (const n of document.querySelectorAll('.pc-ep.pc-current, .pc-card.pc-current')) n.classList.remove('pc-current');
+  if (!state.current) return;
+  const sel = state.current.preview ? '.pc-card[data-feed="' + CSS.escape(state.current.feed_url) + '"]' : '.pc-ep[data-id="' + state.current.id + '"]';
+  for (const n of document.querySelectorAll(sel)) n.classList.add('pc-current');
 }
 function togglePlay() {
   if (!state.current) return;
@@ -1043,7 +1188,7 @@ function togglePlay() {
 }
 async function syncFromServer() {
   const ep = state.current;
-  if (!ep) return;
+  if (!ep || ep.preview) return;
   try {
     const e = await api('api/episodes/' + ep.id);
     if (state.current?.id !== e.id || e.played || e.position_at <= (state.savedAt || 0)) return;
@@ -1066,9 +1211,10 @@ function miniClosed(np) {
 async function closePlayer() {
   const ep = state.current;
   if (!ep) return;
-  const save = saveProgress(true);  // reads the place synchronously, before the audio is unloaded
+  const save = ep.preview ? null : saveProgress(true);  // reads the place synchronously, before the audio is unloaded
   audio.pause();
   unloadPlayer();
+  if (ep.preview) return;  // a preview leaves nothing behind
   await save;
   const at = Number.isFinite(state.savedAt) && state.savedAt > 0 ? state.savedAt : ep.position_at || 0;
   try { localStorage.setItem(MINI_KEY, JSON.stringify({ id: ep.id, at: Math.max(at, ep.position_at || 0) })); } catch (_) {}
@@ -1118,18 +1264,51 @@ function paintPlayer() {
     $('pl-left').textContent = '−' + clock(Math.max(0, dur - pos));
     $('pl-back').querySelector('span').textContent = '−' + state.settings.skip_back;
     $('pl-fwd').querySelector('span').textContent = '+' + state.settings.skip_forward;
+    paintPlayerTaste();
   }
 }
+// The show's thumbs in the full player (a preview's show too); Mark played becomes Follow for a preview.
+function playerShow() {
+  const ep = state.current;
+  if (!ep) return null;
+  if (ep.preview) return { feed_url: ep.feed_url, title: ep.show_title, preview: true };
+  return state.shows.find(s => s.id === ep.show_id) || null;
+}
+function paintPlayerTaste() {
+  const s = playerShow();
+  const v = s ? (tasteOf.get(s.feed_url) ?? s.taste ?? 0) : 0;
+  $('pl-up').setAttribute('aria-pressed', String(v === 1));
+  $('pl-down').setAttribute('aria-pressed', String(v === -1));
+  $('pl-up').disabled = $('pl-down').disabled = !s;
+  const pre = !!state.current?.preview;
+  $('pl-mark').textContent = pre ? 'Follow' : 'Mark played';
+  $('pl-show').disabled = $('pl-title').disabled = pre;
+}
+async function playerThumb(dir) {
+  const s = playerShow();
+  if (!s) return;
+  const was = tasteOf.get(s.feed_url) ?? s.taste ?? 0;
+  const v = was === dir ? 0 : dir;
+  try { await setTaste(s.feed_url, v); } catch (e) { say(e.message, 'error'); return; }
+  paintPlayerTaste();
+  if (v === -1) {
+    const undo = async () => { await setTaste(s.feed_url, was); paintPlayerTaste(); };
+    toast('Less like this', undo, s.preview ? null : { label: 'Unfollow', run: () => unfollow(s) });
+  }
+}
+$('pl-up').onclick = () => playerThumb(1);
+$('pl-down').onclick = () => playerThumb(-1);
 function setText(n, t) { if (n.textContent !== t) n.textContent = t; }
 function setIcon(btn, name) { if (btn.dataset.icon === name) return; btn.dataset.icon = name; btn.replaceChildren(icon(name)); }
 function renderPlayer() {
   if (!state.current) { popView(); return; }
+  $('pl-mark').disabled = false;
   renderSpeeds();
   paintPlayer();
 }
 async function saveProgress(force, completed = false) {
   const ep = state.current;
-  if (!ep || !state.touched || (!audio.readyState && !completed)) return;
+  if (!ep || ep.preview || !state.touched || (!audio.readyState && !completed)) return;
   const pos = Math.floor(audio.currentTime * 10) / 10;
   if (!force && !completed && Math.abs(pos - state.savedPos) < 3) return;
   state.savedPos = pos; state.lastSaved = Date.now();
@@ -1139,7 +1318,7 @@ async function saveProgress(force, completed = false) {
 }
 function beaconProgress() {
   const ep = state.current;
-  if (!ep || !state.touched || !audio.readyState) return;
+  if (!ep || ep.preview || !state.touched || !audio.readyState) return;
   // keepalive lets the save finish while the page is being hidden or closed.
   const body = JSON.stringify({ position: Math.floor(audio.currentTime), duration: duration() || undefined });
   state.savedPos = audio.currentTime;
@@ -1189,12 +1368,13 @@ audio.addEventListener('pause', async () => {
 // Seeks the owner makes (slider, skip, lock screen) save explicitly; restoring a saved place must not write it back.
 audio.addEventListener('seeked', () => paintPlayer());
 audio.addEventListener('ended', async () => {
+  if (state.current?.preview) return;  // a preview never touches his feed
   await saveProgress(true, true);
   toast('Finished · marked played');
   if (currentView() === 'feed') loadFeed();
 });
 audio.addEventListener('error', () => {
-  if (state.current && audio.getAttribute('src')) say('This episode could not be played. Try downloading it first.', 'error');
+  if (state.current && audio.getAttribute('src')) say(state.current.preview ? 'This preview could not be played.' : 'This episode could not be played. Try downloading it first.', 'error');
 });
 
 // Mini player: the bar opens the full player; play/pause and close are their own 44px+ targets and never open it.
@@ -1242,11 +1422,16 @@ $('pl-back').onclick = () => skip(-state.settings.skip_back);
 $('pl-fwd').onclick = () => skip(state.settings.skip_forward);
 $('pl-seek').addEventListener('input', () => { $('pl-pos').textContent = clock(+$('pl-seek').value); });
 $('pl-seek').addEventListener('change', () => { audio.currentTime = +$('pl-seek').value; saveProgress(true); });
-$('pl-show').onclick = () => state.current && openView('show', state.current.show_id);
-$('pl-title').onclick = () => state.current && openView('episode', state.current.id);
+$('pl-show').onclick = () => state.current && !state.current.preview && openView('show', state.current.show_id);
+$('pl-title').onclick = () => state.current && !state.current.preview && openView('episode', state.current.id);
 $('pl-mark').onclick = async () => {
   const ep = state.current;
   if (!ep) return;
+  if (ep.preview) {  // Follow the show being previewed
+    try { const r = await api('api/subscribe', { url: ep.feed_url }); toast('Following ' + r.show.title); $('pl-mark').disabled = true; }
+    catch (e) { say(e.message, 'error'); }
+    return;
+  }
   try {
     audio.pause();
     await api('api/episodes/' + ep.id + '/mark', { played: true });
@@ -1260,7 +1445,7 @@ $('pl-mark').onclick = async () => {
 if (!W) {
   say('Wizard system functions are unavailable. Open Podcasts through Wizard.', 'error');
 } else {
-  W.ready({ name: 'wizard-podcasts', version: '0.4.1' });
+  W.ready({ name: 'wizard-podcasts', version: '0.5.0' });
   // Domain Back: close the page on top (show, episode, player), then Discover -> My feed; at My feed the core decides.
   W.back.register({ canGoBack: () => state.stack.length > 0 || state.tab !== 'feed', back: () => popView() });
 }

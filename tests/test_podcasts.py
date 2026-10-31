@@ -2,6 +2,7 @@
 Network is never touched: feed/audio fetches are served by a fake opener."""
 import http.client
 import json
+import re
 import os
 import socket
 import sys
@@ -410,7 +411,7 @@ def test_subscribe_download_range_progress_mark_mcp():
         r, b = req('POST', '/mcp', {'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call', 'params': {'name': name, 'arguments': args}})
         return json.loads(b)['result']
     tools = json.loads(req('POST', '/mcp', {'jsonrpc': '2.0', 'id': 1, 'method': 'tools/list'})[1])['result']['tools']
-    assert [t['name'] for t in tools] == ['podcasts_status', 'podcasts_search', 'podcasts_subscribe', 'podcasts_list', 'podcasts_episode', 'podcasts_mark']
+    assert [t['name'] for t in tools] == ['podcasts_status', 'podcasts_search', 'podcasts_subscribe', 'podcasts_list', 'podcasts_episode', 'podcasts_mark', 'podcasts_discover', 'podcasts_taste']
     st = mcp('podcasts_status', {})['structuredContent']
     assert st['shows'] == 1 and st['downloaded'] == 1 and st['now_playing']['position'] == 61.5
     assert mcp('podcasts_list', {'view': 'inbox'})['structuredContent']['continue'][0]['id'] == eid
@@ -1039,10 +1040,11 @@ def test_view_has_skip_and_shows_list():
     html = (ROOT / 'web/index.html').read_text()
     js = (ROOT / 'web/app.js').read_text()
     css = (ROOT / 'web/styles.css').read_text()
-    # the followed shows (Following/Follow toggles, tap opens a show) live in Discover when the search box is empty
+    # 0.5.0: Discover is recommendations (search box + gear stay); followed shows are managed in Filters and the show page
     discover = html.split('id="view-discover"')[1].split('</section>')[0]
-    assert 'id="following-list"' in discover and 'id="search-input"' in discover and 'id="open-settings"' in discover
-    assert "'Following' : 'Follow'" in js and "openView('show', s.id)" in js
+    assert 'id="disc-list"' in discover and 'id="search-input"' in discover and 'id="open-settings"' in discover
+    assert 'following-list' not in html and 'followRow' not in js
+    assert "'Following' : 'Follow'" in js and "openView('show', state.show" not in js
     assert "'/skip'" in js and 'skip-all' in js and "'Skipped'" in js and 'swipeable' in js
     assert '.pc-skip' in css and '@container wz-app (width < 700px)' in css
     # no Podcasts/YouTube filter or kind label on the screen
@@ -1133,7 +1135,7 @@ def test_view_three_button_nav():
     assert "$('nav-filter').onclick = openFilters" in js and "$('nav-filter').disabled = v !== 'feed'" in js
     # the Filters sheet: show picker with All shows, state, order (phone and wide labels), skip all for the chosen show
     sheet = js.split('function openFilters()')[1].split('\n}\n')[0]
-    for bit in ("'pc-showgrid'", 'state.shows.map(filterChip)', "'Unplayed'", "'Skipped'", "'Newest at bottom'", "'Oldest first'", "'Skip all from '", "sheet('Filters'"):
+    for bit in ("'pc-showgrid pc-showlist'", 'state.shows.map(filterChip)', "'Unplayed'", "'Skipped'", "'Newest at bottom'", "'Oldest first'", "'Skip all from '", "sheet('Filters'"):
         assert bit in sheet, bit
     assert "'All shows'" in js
     # the active show filter is visible and one tap clears it
@@ -1310,3 +1312,270 @@ def test_view_042_phone_nav_no_double_safe_area():
     assert 'padding: 4px 12px max(4px, env(safe-area-inset-bottom, 0px));' in narrow
     assert 'html.wz-hosted:not([data-presentation="immersive"]) .pc-app > .pc-nav { padding-bottom: 0; }' in narrow
     assert '.pc-nav-b { isolation: isolate; gap: 6px; min-width: 48px; min-height: 44px;' in narrow  # 44px hit areas kept
+
+
+# ------------------------------------------------------------------ 0.5.0: Discover feed with taste learning
+
+import discover as D  # noqa: E402
+
+DISC_SHOWS = []
+
+
+def _seed_shows():
+    """Two followed shows (one RSS, one YouTube) with episodes heard through and skipped, matched to directory genres."""
+    t = P.now()
+
+    def go(c):
+        ids = []
+        for url, title, author in (('https://disc.example.com/lex.rss', 'Lex Fridman Podcast', 'Lex Fridman'),
+                                   ('https://www.youtube.com/feeds/videos.xml?playlist_id=UULF' + 'a' * 22, 'Fireship', 'Fireship')):
+            cur = c.execute('INSERT INTO shows(feed_url, title, author, added_at, last_checked) VALUES(?,?,?,?,?)', (url, title, author, t, t))
+            ids.append(cur.lastrowid)
+        for n in range(6):  # Lex: 4 heard through, 2 skipped
+            c.execute('INSERT INTO episodes(show_id, guid, title, published, enclosure_url, first_seen, played, skipped) VALUES(?,?,?,?,?,?,?,?)',
+                      (ids[0], f'd{n}', f'#{500 - n} – Guest Person{n}: Topic', t - n * 86400, 'https://cdn.example.com/x.mp3', t, int(n < 4), int(n >= 4)))
+        c.execute("INSERT INTO show_meta(feed_url, itunes_id, genres, genre_ids, at) VALUES(?,?,?,?,?)",
+                  ('https://disc.example.com/lex.rss', 111, json.dumps(['Technology', 'Science']), '{}', t))
+        return ids
+    DISC_SHOWS[:] = P.write(go)
+    return DISC_SHOWS
+
+
+def _cleanup_disc():
+    def go(c):
+        for sid in DISC_SHOWS:
+            c.execute('DELETE FROM shows WHERE id=?', (sid,))
+        for table in ('taste', 'unfollows', 'show_meta', 'discover_cache'):
+            c.execute(f'DELETE FROM {table}')
+    P.write(go)
+    D._state['pool'] = None
+
+
+def _cand(url, title, source='rss', genres=(), edges=(), pop=(), itunes_id=0, channel_id='', latest_age=86400, author=''):
+    return {'feed_url': url, 'source': source, 'title': title, 'author': author or title, 'artwork': '', 'genres': list(genres),
+            'itunes_id': itunes_id, 'channel_id': channel_id, 'edges': [list(e) for e in edges], 'pop': [list(p) for p in pop],
+            'latest': {'title': 'Newest of ' + title, 'published': P.now() - latest_age, 'url': 'https://cdn.example.com/ep2.mp3'}}
+
+
+LEX = 'https://disc.example.com/lex.rss'
+FIRE = 'https://www.youtube.com/feeds/videos.xml?playlist_id=UULF' + 'a' * 22
+
+
+def _pool():
+    shows = {}
+    for c in (
+        _cand('https://disc.example.com/huberman.rss', 'Huberman Lab', genres=['Science'], edges=[(LEX, 'like')], itunes_id=201),
+        _cand('https://disc.example.com/dwarkesh.rss', 'Dwarkesh Podcast', genres=['Technology'], edges=[(LEX, 'like')], itunes_id=202),
+        _cand('https://disc.example.com/guest.rss', 'Guest Person0 Show', genres=['Technology'], edges=[(LEX, 'guest')], itunes_id=203),
+        _cand('https://disc.example.com/lexagain.rss', 'The Lex Fridman Podcast', genres=['Technology'], edges=[(LEX, 'like')], itunes_id=204),
+        _cand('https://disc.example.com/lexid.rss', 'Lex mirror', genres=['Technology'], edges=[(LEX, 'like')], itunes_id=111),
+        _cand('https://disc.example.com/old.rss', 'Dead Show', genres=['Technology'], edges=[(LEX, 'like')], itunes_id=205, latest_age=400 * 86400),
+        _cand('https://disc.example.com/daily.rss', 'The Daily', genres=['News'], pop=[('chart', 'us', 0)], itunes_id=206),
+        _cand('https://disc.example.com/tech.rss', 'TED Tech', genres=['Technology'], pop=[('genre', 'Technology', 2)], itunes_id=207),
+        _cand('https://disc.example.com/crime.rss', 'Crime Junkie', genres=['True Crime'], pop=[('chart', 'us', 1)], itunes_id=208),
+        _cand(D.youtube.feed_url('UC' + 'b' * 22), 'Theo - t3.gg', source='youtube', edges=[(FIRE, 'yt')], channel_id='UC' + 'b' * 22),
+        _cand(D.youtube.feed_url('UC' + 'c' * 22), 'Dwarkesh Podcast', source='youtube', edges=[(FIRE, 'yt')], channel_id='UC' + 'c' * 22),
+        _cand(D.youtube.feed_url('UC' + 'a' * 22), 'Fireship', source='youtube', edges=[(LEX, 'like')], channel_id='UC' + 'a' * 22),
+        _cand(D.youtube.feed_url('UC' + 'd' * 22), 'JRE Clips', source='youtube', edges=[(FIRE, 'yt')], channel_id='UC' + 'd' * 22),
+    ):
+        shows[c['feed_url']] = c
+    pool = {'built_at': P.now(), 'shows': D.dedupe(shows), 'genre_ids': {}}
+    D.save_pool(pool)
+    return pool
+
+
+def test_taste_scoring_signals():
+    """Signals: follow +1, heard through +0.25 each (cap 1.5), skipped -0.05 each, thumbs up +2.5, thumbs down -3 (blocked),
+    unfollowed -1; genre affinity comes from the shows that carry them."""
+    _seed_shows()
+    try:
+        sm = D.seeds()
+        assert sm[LEX]['followed'] and abs(sm[LEX]['w'] - (1 + 4 * 0.25 - 2 * 0.05)) < 1e-9
+        assert sm[FIRE]['w'] == 1.0 and sm[FIRE]['channel_id'] == 'a' * 0 + 'UC' + 'a' * 22
+        aff = D.genre_affinity(sm)
+        assert aff['Technology'] > 0 and aff['Science'] > 0
+        P.write(lambda c: c.execute("INSERT INTO unfollows(feed_url, title, genres, at) VALUES('https://disc.example.com/gone.rss','Gone','[\"True Crime\"]',1)"))
+        D.set_taste(FIRE, None, 1)
+        sm = D.seeds()
+        assert sm[FIRE]['w'] == 1.0 + D.LIKE_W and sm[FIRE]['thumb'] == 1
+        assert sm['https://disc.example.com/gone.rss']['w'] == D.UNFOLLOW_W
+        assert D.genre_affinity(sm)['True Crime'] < 0
+        D.set_taste(None, DISC_SHOWS[0], -1)  # by show_id
+        assert D.seeds()[LEX]['w'] == D.DISLIKE_W
+        s = D.summary()
+        assert [x['title'] for x in s['avoided_shows'] if x['why'] == 'thumbs down'] == ['Lex Fridman Podcast']
+        assert s['thumbs'] == {'up': 1, 'down': 1} and 'Fireship' in [x['title'] for x in s['liked']]
+        for bad in (2, True, '1', None):
+            with pytest.raises(P.Problem):
+                D.set_taste(FIRE, None, bad)
+        with pytest.raises(P.Problem):
+            D.set_taste('https://nowhere.example.com/x.rss', None, 1)
+        D.set_taste(FIRE, None, 0)
+        assert D.seeds()[FIRE]['thumb'] == 0
+    finally:
+        _cleanup_disc()
+
+
+def test_discover_never_shows_followed_or_thumbed_down_and_dedupes():
+    _seed_shows()
+    try:
+        pool = _pool()
+        titles = [e[1]['title'] for e in D.rank(pool)]
+        # followed shows never appear: by feed (Fireship channel), by name (The Lex Fridman Podcast), by Apple id (111)
+        assert 'Fireship' not in titles and 'The Lex Fridman Podcast' not in titles and 'Lex mirror' not in titles
+        assert 'Dead Show' not in titles and 'JRE Clips' not in titles  # nothing new in half a year; clips are not shows
+        # one card per show: the YouTube 'Dwarkesh Podcast' folded into the podcast (RSS kept, its edge merged)
+        assert titles.count('Dwarkesh Podcast') == 1
+        dw = pool['shows']['https://disc.example.com/dwarkesh.rss']
+        assert dw['source'] == 'rss' and [FIRE, 'yt'] in dw['edges']
+        assert D.youtube.feed_url('UC' + 'c' * 22) not in pool['shows']
+        ranked = D.rank(pool)
+        reasons = {e[1]['title']: e[2] for e in ranked}
+        assert reasons['Huberman Lab'] == 'Like Lex Fridman Podcast' and reasons['Guest Person0 Show'] == 'Guest on Lex Fridman Podcast'
+        assert reasons['Theo - t3.gg'] == 'Like Fireship' and reasons['The Daily'] == 'Popular in the US'
+        assert reasons['TED Tech'] == 'Popular in Technology'
+        # mix: about 7 'for you' to 3 popular, popular never first
+        kinds = [e[3] for e in ranked]
+        assert kinds[0] == 'for_you' and kinds[3] == 'popular' and kinds.count('popular') >= 2
+        # thumbs down blocks the show for good and dulls what is similar to it and its genre
+        D.set_taste('https://disc.example.com/huberman.rss', None, -1)
+        titles = [e[1]['title'] for e in D.rank(pool)]
+        assert 'Huberman Lab' not in titles
+        P.write(lambda c: c.execute("UPDATE taste SET genres='[\"True Crime\"]' WHERE feed_url='https://disc.example.com/huberman.rss'"))
+        assert 'Crime Junkie' not in [e[1]['title'] for e in D.rank(pool)]
+        pool['shows']['https://disc.example.com/tech.rss']['edges'].append(['https://disc.example.com/huberman.rss', 'like'])
+        assert 'TED Tech' not in [e[1]['title'] for e in D.rank(pool)]  # similar to a disliked show, nothing he likes points to it
+        D.set_taste('https://disc.example.com/huberman.rss', None, 0)
+        assert 'Huberman Lab' in [e[1]['title'] for e in D.rank(pool)]
+    finally:
+        _cleanup_disc()
+
+
+def test_thumbs_up_boosts_similar_shows():
+    _seed_shows()
+    try:
+        pool = _pool()
+        before = [e[1]['title'] for e in D.rank(pool)]
+        # Theo is similar to Fireship; a thumbs up on Fireship lifts it above Lex's similar shows
+        D.set_taste(FIRE, None, 1)
+        after = [e[1]['title'] for e in D.rank(pool)]
+        assert after.index('Theo - t3.gg') < before.index('Theo - t3.gg') and 'Theo - t3.gg' in after[:3] and after[0] == 'Dwarkesh Podcast'
+        assert D.diversify([(3, {'title': 'a'}, 'Like X', 'for_you'), (2.9, {'title': 'b'}, 'Like X', 'for_you'),
+                            (2.5, {'title': 'c'}, 'Like Y', 'for_you')])[1][2] == 'Like Y'
+    finally:
+        _cleanup_disc()
+
+
+def test_discover_api_mcp_paging_preview_and_unfollow_signal(monkeypatch):
+    _seed_shows()
+    try:
+        _pool()
+        monkeypatch.setattr(D, 'youtube_latest', lambda cid: {'title': 'Newest upload', 'published': P.now() - 3600, 'url': 'https://www.youtube.com/watch?v=abcdefghijk'})
+        r, body = req('GET', '/api/discover?limit=3')
+        assert r.status == 200
+        d = json.loads(body)
+        assert len(d['items']) == 3 and d['next_cursor'] == '3' and d['building'] is False
+        first = d['items'][0]
+        assert set(first) >= {'feed_url', 'title', 'artwork', 'reason', 'latest', 'taste', 'source'} and first['latest']['playable']
+        r, body = req('GET', '/api/discover?limit=50&cursor=3')
+        rest = json.loads(body)
+        assert rest['next_cursor'] is None and not {i['feed_url'] for i in rest['items']} & {i['feed_url'] for i in d['items']}
+        # thumbs through the API: bad value refused, then down + summary + clear
+        r, body = req('POST', '/api/shows/taste', {'feed_url': first['feed_url'], 'value': 5})
+        assert r.status == 400
+        r, body = req('POST', '/api/shows/taste', {'feed_url': first['feed_url'], 'value': -1})
+        assert r.status == 200 and json.loads(body)['taste']['thumbs']['down'] == 1
+        r, body = req('GET', '/api/discover?limit=50')
+        assert first['feed_url'] not in [i['feed_url'] for i in json.loads(body)['items']]
+        r, body = req('GET', '/api/taste')
+        assert [x['title'] for x in json.loads(body)['avoided_shows']] == [first['title']]
+        r, body = req('POST', '/api/shows/taste', {'feed_url': first['feed_url'], 'value': 0})
+        assert json.loads(body)['taste']['thumbs'] == {'up': 0, 'down': 0}
+        # MCP
+        r, body = req('POST', '/mcp', {'jsonrpc': '2.0', 'id': 1, 'method': 'tools/list'})
+        names = [t['name'] for t in json.loads(body)['result']['tools']]
+        assert 'podcasts_discover' in names and 'podcasts_taste' in names
+        r, body = req('POST', '/mcp', {'jsonrpc': '2.0', 'id': 2, 'method': 'tools/call', 'params': {'name': 'podcasts_discover', 'arguments': {'limit': 2}}})
+        assert len(json.loads(body)['result']['structuredContent']['items']) == 2
+        r, body = req('POST', '/mcp', {'jsonrpc': '2.0', 'id': 3, 'method': 'tools/call', 'params': {'name': 'podcasts_taste', 'arguments': {'show_id': DISC_SHOWS[1], 'value': 1}}})
+        res = json.loads(body)['result']
+        assert not res['isError'] and res['structuredContent']['value'] == 1
+        r, body = req('POST', '/mcp', {'jsonrpc': '2.0', 'id': 4, 'method': 'tools/call', 'params': {'name': 'podcasts_taste', 'arguments': {}}})
+        assert json.loads(body)['result']['structuredContent']['thumbs']['up'] == 1
+        # preview: the newest episode of a show he does not follow streams through the app; nothing is followed or saved
+        shows_before = P.q('SELECT COUNT(*) n FROM shows', one=True)['n']
+        r, body = req('GET', '/api/discover/audio?feed_url=' + D.quote('https://disc.example.com/huberman.rss', safe=''), headers={'Range': 'bytes=0-9'})
+        assert r.status == 206 and body == AUDIO[:10]
+        r, _ = req('GET', '/api/discover/audio?feed_url=https%3A%2F%2Fnope.example.com%2Fx')
+        assert r.status == 404
+        assert P.q('SELECT COUNT(*) n FROM shows', one=True)['n'] == shows_before
+        # unfollow is remembered as a mild 'less like this' unless it only undoes a follow; following again forgets it
+        r, _ = req('POST', f'/api/shows/{DISC_SHOWS[1]}/unsubscribe', {'undo': True})
+        assert r.status == 200 and not P.q('SELECT 1 FROM unfollows', one=True)
+        r, _ = req('POST', f'/api/shows/{DISC_SHOWS[0]}/unsubscribe', {})
+        assert P.q('SELECT title, itunes_id FROM unfollows', one=True)['itunes_id'] == 111
+        assert D.seeds()[LEX]['w'] == D.UNFOLLOW_W
+        _pool()['shows'][LEX] = _cand(LEX, 'Lex Fridman Podcast', edges=[(FIRE, 'yt')])
+        assert 'Lex Fridman Podcast' not in [e[1]['title'] for e in D.rank()]  # an unfollowed show is not offered back
+    finally:
+        _cleanup_disc()
+
+
+def test_directory_parsers_and_guests():
+    page = ('<div aria-label="Episodes"><a href="https://podcasts.apple.com/us/podcast/x/id1">x</a></div>'
+            '<div class="section" data-testid="section-container" aria-label="You Might Also Like" aria-hidden="false">'
+            '<a href="https://podcasts.apple.com/us/podcast/dwarkesh/id1516093381">a</a><a href="/us/podcast/all-in/id1502871393">b</a>'
+            '<a href="/us/podcast/self/id99">self</a></div><div class="section" data-testid="section-container" aria-label="More">'
+            '<a href="/us/podcast/z/id5">z</a></div>')
+    assert D.parse_apple_related(page, 99) == [1516093381, 1502871393]
+    data = {'contents': {'x': [{'lockupViewModel': {
+        'contentImage': {'thumbnailViewModel': {'overlays': [{'thumbnailBottomOverlayViewModel': {'badges': [{'thumbnailBadgeViewModel': {'text': '1:02:03'}}]}}]}},
+        'metadata': {'lockupMetadataViewModel': {'image': {'decoratedAvatarViewModel': {'avatar': {'avatarViewModel': {'image': {'sources': [{'url': 'https://yt3.ggpht.com/abc=s68-c-k'}]}}},
+                                                 'a11yLabel': 'Go to channel Theo - t3.gg',
+                                                 'rendererContext': {'commandContext': {'onTap': {'innertubeCommand': {'browseEndpoint': {'browseId': 'UC' + 'b' * 22}}}}}}}}}}},
+        {'lockupViewModel': {'contentImage': {'thumbnailViewModel': {'overlays': [{'thumbnailBottomOverlayViewModel': {'badges': [{'thumbnailBadgeViewModel': {'text': '0:45'}}]}}]}},
+                             'metadata': {'lockupMetadataViewModel': {'image': {'decoratedAvatarViewModel': {'a11yLabel': 'Go to channel Shorts Guy',
+                                 'rendererContext': {'commandContext': {'onTap': {'innertubeCommand': {'browseEndpoint': {'browseId': 'UC' + 'e' * 22}}}}}}}}}}}]}}
+    html = '<script>var ytInitialData = ' + json.dumps(data) + ';</script>"category":"Science & Technology"'
+    got = D.parse_youtube_related(html)
+    assert got['category'] == 'Science & Technology'
+    assert got['channels'] == [{'channel_id': 'UC' + 'b' * 22, 'title': 'Theo - t3.gg', 'artwork': 'https://yt3.ggpht.com/abc=s240-c-k'}]
+    assert D.guests('#501 – DHH: Future of Programming') == [] and D.guests('#2572 - Colum Tyrrell') == ['Colum Tyrrell']
+    assert D.guests('#352 Cain Velasquez - UFC Champion') == ['Cain Velasquez']
+    assert D.guests('Andrew Wilson: This Technology Will Make Women Obsolete') == ['Andrew Wilson']
+    assert D.guests('Zen: Stop Trying to Quiet Your Mind | Henry Shukman') == ['Henry Shukman']
+    assert D.guests('Why Your Marriage Feels Like A Prison') == []
+    counts = D.guest_counts({'a': ['#1 - Andrew Huberman', '#2 - Jo Bloggs'], 'b': ['Andrew Huberman: Sleep']})
+    assert counts[0]['name'] == 'Andrew Huberman' and counts[0]['seeds'] == ['a', 'b']
+    own = {'title': 'Huberman Lab', 'author': 'Scicomm Media', 'episodes': 400}
+    fan = {'title': 'Andrew Huberman Summaries', 'author': 'Fan Co', 'episodes': 400}
+    assert D.guest_show('Andrew Huberman', [own]) == own and D.guest_show('Andrew Huberman', [fan]) is None
+    assert D.title_key('The Diary Of A CEO with Steven Bartlett') == D.title_key('The Diary Of A CEO')
+    assert D.ago_to_ts('3 days ago', 1000000) == 1000000 - 3 * 86400 and D.ago_to_ts('Streamed 2 hours ago', 10000) == 10000 - 7200
+
+
+def test_view_050_discover_cards_filters_rows_player_thumbs():
+    html = (ROOT / 'web/index.html').read_text()
+    js = (ROOT / 'web/app.js').read_text()
+    css = (ROOT / 'web/styles.css').read_text()
+    # cards: artwork, name, one reason line, newest episode + when; thumbs up/down + Follow; tap previews
+    card = js.split('function cardRow(item)')[1].split('\n}\n')[0]
+    for bit in ("'pc-reason', item.reason", "'pc-card-ep'", 'thumbButton(1', 'thumbButton(-1', "'pc-follow'", 'previewShow(item)'):
+        assert bit in card, bit
+    assert "api('api/discover?limit='" in js and "'api/shows/taste'" in js and "{ undo: true }" in js
+    assert "toast('Not for you'" in js  # thumbs down leaves in place with Undo
+    # thumb-first: best card lowest (reversed on a phone), More on the far end, grid columns as the window widens
+    assert 'thumb ? list.reverse() : list' in js and 'IntersectionObserver' in js
+    assert 'class="wz-grid pc-cards" id="disc-list"' in html
+    narrow = css.split('@container wz-app (width < 700px)')[1].split('\n}\n')[0]
+    assert '#view-discover > .pc-more { order: -1; }' in narrow and '#disc-list' in narrow
+    # preview never writes: no progress, no beacon, no 'finished'
+    for fn in ('async function saveProgress', 'function beaconProgress', 'async function syncFromServer'):
+        assert 'preview' in js.split(fn)[1].split('\n')[2], fn
+    # Filters: each show row picks the filter and has a small Unfollow
+    assert "'pc-srow-x', 'Unfollow'" in js and '.pc-srow-x' in css
+    # player thumbs for the show; thumbs down offers Unfollow in the toast
+    assert 'id="pl-up"' in html and 'id="pl-down"' in html and "label: 'Unfollow', run: () => unfollow(s)" in js
+    assert 'id="toast-act"' in html
+    # no Podcasts/YouTube split on screen, kit variables only
+    assert 'YouTube' not in html and not re.search(r'#[0-9a-fA-F]{3,8}\b', css.split('/* 0.5.0 Discover cards')[1].split('@container')[0])

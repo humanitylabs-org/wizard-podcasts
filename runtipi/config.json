@@ -4,24 +4,41 @@
   "wizard_type": "service",
   "available": true,
   "short_desc": "Service: your private podcast player. Follow shows, auto-download new episodes, resume anywhere.",
-  "description": "Follow podcasts from the free Apple Podcasts directory, any RSS/Atom feed, or an OPML file. New episodes are checked in the background and downloaded to this app's storage under a size cap you choose. Play in the app with speed 0.8-3x and skip buttons; your place is saved on the Wizard so phone and desktop share it. Episodes come only from each show's public feed. Agents use it through MCP tools.",
+  "description": "Follow podcasts from the free Apple Podcasts directory, any RSS/Atom feed, or an OPML file. New episodes are checked in the background and downloaded to this app's storage under a size cap you choose. Play in the app with speed 0.8-3x and skip buttons; your place is saved on the Wizard so phone and desktop share it. Episodes come only from each show's public feed. Discover recommends shows from what you follow, thumb up or down and listen to, learned privately on the box. Agents use it through MCP tools.",
   "author": "Humanity Labs",
   "port": 9207,
-  "categories": ["media"],
-  "tipi_version": 11,
-  "version": "0.4.2",
+  "categories": [
+    "media"
+  ],
+  "tipi_version": 12,
+  "version": "0.5.0",
   "source": "https://github.com/humanitylabs-org/wizard-podcasts",
   "exposable": false,
-  "supported_architectures": ["arm64", "amd64"],
+  "supported_architectures": [
+    "arm64",
+    "amd64"
+  ],
   "created_at": 1793370089000,
-  "updated_at": 1793427543000,
+  "updated_at": 1793430411616,
   "dynamic_config": true,
   "min_tipi_version": "4.8.0",
   "uid": 1000,
   "gid": 1000,
   "no_gui": false,
   "form_fields": [
-    {"type": "text", "label": "Trusted Wizard gateway hostname (no port)", "env_variable": "WIZARD_TRUSTED_HOSTS", "required": false, "default": ""},
-    {"type": "text", "label": "Trusted Wizard browser origin (scheme and port)", "env_variable": "WIZARD_TRUSTED_ORIGINS", "required": false, "default": ""}
+    {
+      "type": "text",
+      "label": "Trusted Wizard gateway hostname (no port)",
+      "env_variable": "WIZARD_TRUSTED_HOSTS",
+      "required": false,
+      "default": ""
+    },
+    {
+      "type": "text",
+      "label": "Trusted Wizard browser origin (scheme and port)",
+      "env_variable": "WIZARD_TRUSTED_ORIGINS",
+      "required": false,
+      "default": ""
+    }
   ]
 }
