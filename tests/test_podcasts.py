@@ -916,7 +916,9 @@ def test_migration_adds_skip_columns_to_an_old_database(tmp_path, monkeypatch):
     assert P.q('SELECT COUNT(*) n FROM shows', one=True)['n'] == 1
 
 
-def test_skip_hides_from_feed_frees_downloads_and_undo_restores():
+def test_skip_hides_from_feed_frees_downloads_and_undo_restores(monkeypatch):
+    # Hold the live download worker: it would otherwise pick up (and fail) the seeded 'queued' row before the skip.
+    monkeypatch.setattr(P, '_download', lambda r: time.sleep(0.05))
     now = int(time.time())
     t0 = now + 4 * 10 ** 7  # newer than anything else in the shared test database
     folder = P.EPISODES_DIR / 'skiptest'

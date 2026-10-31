@@ -186,7 +186,7 @@ html.wz-hosted .pc-mini { background: color-mix(in srgb, var(--wz-base) 60%, tra
   .pc-app[data-view="feed"] > #main { padding-top: calc(var(--wos-cutout, 0px) + 4px); }
   /* lists sit on the bottom edge when short; More (older) is on top */
   #view-feed:not([hidden]), #view-following:not([hidden]), #view-add:not([hidden]) { display: flex; flex-direction: column; justify-content: flex-end; min-height: 100%; }
-  #feed-more { order: -1; }
+  #view-feed > .pc-more { order: -1; }
   .pc-none { padding: 0 0 32px; }
   /* find: the search box is a composer at the bottom, results above it (best match lowest) */
   .pc-app[data-view="add"] > #main { padding-bottom: 0; }
