@@ -1379,7 +1379,7 @@ def _pool():
         _cand(D.youtube.feed_url('UC' + 'd' * 22), 'JRE Clips', source='youtube', edges=[(FIRE, 'yt')], channel_id='UC' + 'd' * 22),
     ):
         shows[c['feed_url']] = c
-    pool = {'built_at': P.now(), 'shows': D.dedupe(shows), 'genre_ids': {}}
+    pool = {'built_at': P.now(), 'shows': D.dedupe(shows), 'genre_ids': {}, 'v': D.POOL_V}
     D.save_pool(pool)
     return pool
 
@@ -1579,3 +1579,24 @@ def test_view_050_discover_cards_filters_rows_player_thumbs():
     assert 'id="toast-act"' in html
     # no Podcasts/YouTube split on screen, kit variables only
     assert 'YouTube' not in html and not re.search(r'#[0-9a-fA-F]{3,8}\b', css.split('/* 0.5.0 Discover cards')[1].split('@container')[0])
+
+
+def test_failed_chart_source_is_retried_within_the_hour(monkeypatch):
+    """0.5.1: a chart feed that timed out during a build must not leave 'Popular in the US' out for 12 hours."""
+    try:
+        pool = {'built_at': P.now(), 'shows': {}, 'genre_ids': {}, 'retry_at': P.now() - 1, 'v': D.POOL_V}
+        assert D.due(dict(pool, retry_at=0, v=1))  # a 0.5.0 pool is rebuilt once
+        assert D.due(pool) and not D.due(dict(pool, retry_at=0)) and not D.due(dict(pool, retry_at=P.now() + 600))
+        assert D.due({'built_at': P.now() - D.TTL - 1, 'shows': {}}) and D.due({'built_at': 0, 'shows': {}})
+        calls = []
+
+        def flaky(url, cap=0, headers=None, allow=None):
+            calls.append(url)
+            if len(calls) == 1:
+                raise D.FetchError('The read operation timed out')
+            return b'{"feed": {"results": [{"id": "1"}]}}'
+        monkeypatch.setattr(D, 'fetch_bytes', flaky)
+        monkeypatch.setattr(D.time, 'sleep', lambda s: None)
+        assert D.chart_ids('us') == [1] and len(calls) == 2
+    finally:
+        _cleanup_disc()
