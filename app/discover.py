@@ -42,6 +42,7 @@ KIND_W = {'like': 1.0, 'yt': 0.8, 'guest': 0.6, 'author': 0.5}  # Apple 'You Mig
 FOLLOW_W, HEARD_W, HEARD_CAP, SKIP_W, SKIP_CAP = 1.0, 0.25, 1.5, 0.05, 0.75
 LIKE_W, DISLIKE_W, UNFOLLOW_W = 2.5, -3.0, -1.0
 AVOID_GENRE_AT = -1.0
+POOL_V = 2  # pool layout; a pool from an older release is rebuilt (cached sources keep that quick)
 APPLE_UA = {'User-Agent': youtube.BROWSER_UA, 'Accept-Language': 'en-US,en;q=0.9'}
 # YouTube categories -> Apple Podcasts genres, so channel taste and podcast taste share one vocabulary.
 YT_GENRES = {'Science & Technology': 'Technology', 'Education': 'Education', 'News & Politics': 'News', 'Comedy': 'Comedy',
@@ -98,7 +99,11 @@ def itunes_json(url):
 
 
 def plain_json(url):
-    return json.loads(fetch_bytes(url, 8 * MB))
+    try:
+        return json.loads(fetch_bytes(url, 8 * MB))
+    except FetchError:  # Apple's chart feeds time out now and then: one more try
+        time.sleep(2)
+        return json.loads(fetch_bytes(url, 8 * MB))
 
 
 def cache_get(k, ttl):
@@ -598,7 +603,7 @@ def build(force=False):
     _state['error'] = ''
     try:
         old = load_pool()
-        if not force and old['built_at'] and now() - old['built_at'] < TTL:
+        if not force and not due(old):
             return old
         pool = _empty_pool()
         pool['built_at'] = 0
@@ -613,6 +618,7 @@ def build(force=False):
             cand = _add(pool, s)
             for c, rank in chart[i]:
                 _pop(cand, 'chart', c, rank)
+        missing = [] if chart else ['charts']
         if not old['shows']:
             save_pool(dict(pool, built_at=0))
         # 2. what the owner's shows are (Apple id, genres)
@@ -695,6 +701,8 @@ def build(force=False):
                 cand['latest'] = s.get('latest')
         pool['shows'] = dedupe(pool['shows'])
         pool['built_at'] = now()
+        pool['retry_at'] = now() + 3600 if missing else 0  # a source that failed is tried again within the hour
+        pool['v'] = POOL_V
         save_pool(pool)
         return pool
     except Exception as e:  # never let the worker die; keep the last pool
@@ -704,6 +712,13 @@ def build(force=False):
         _state['building'] = False
         _state['stage'] = ''
         _build_lock.release()
+
+
+def due(pool):
+    """The pool needs a rebuild: never built, older than the cache time, or a source failed last time and an hour passed."""
+    if not pool.get('built_at') or now() - pool['built_at'] >= TTL or pool.get('v') != POOL_V:
+        return True
+    return bool(pool.get('retry_at')) and now() >= pool['retry_at']
 
 
 def _json_dict(row):
@@ -870,7 +885,7 @@ def discover(limit=20, cursor=None):
     except (TypeError, ValueError):
         raise P.Problem(400, 'limit and cursor must be whole numbers.') from None
     pool = load_pool()
-    if not pool['built_at'] or now() - pool['built_at'] > TTL:
+    if due(pool):
         wake.set()
     ranked = rank(pool)
     tastes = {r['feed_url']: r['value'] for r in P.q('SELECT feed_url, value FROM taste')}
@@ -989,8 +1004,7 @@ def _loop():
     time.sleep(int(os.environ.get('PODCASTS_DISCOVER_DELAY', '20')))
     while True:
         try:
-            pool = load_pool()
-            if not pool['built_at'] or now() - pool['built_at'] >= TTL:
+            if due(load_pool()):
                 build()
         except Exception:
             pass
