@@ -701,7 +701,7 @@ def test_inbox_filters_by_show_kind_and_state():
             return sorted(e['title'] for e in d['continue'] + d['new'])
 
         st, full = get()
-        assert st == 200 and full['filter'] == {'show_id': None, 'kind': None, 'state': None, 'sort': 'newest', 'since': None}
+        assert st == 200 and full['filter'] == {'show_id': None, 'kind': None, 'state': None, 'sort': 'newest', 'since': None, 'q': ''}
         chips = full['filters']['shows']
         ours = [c for c in chips if c['id'] in (a, b, y)]
         # newest episode first: Beta (t0+50), Gamma (t0+20), Alpha (t0+3); a0 is not in Up next so does not count
@@ -740,7 +740,7 @@ def test_inbox_filters_by_show_kind_and_state():
             return json.loads(body)['result']
         tools = json.loads(req('POST', '/mcp', {'jsonrpc': '2.0', 'id': 1, 'method': 'tools/list'})[1])['result']['tools']
         props = [t for t in tools if t['name'] == 'podcasts_list'][0]['inputSchema']['properties']
-        assert props['kind']['enum'] == ['podcast', 'youtube'] and props['state']['enum'] == ['started', 'unplayed']
+        assert props['kind']['enum'] == ['podcast', 'youtube'] and props['state']['enum'] == ['started', 'unplayed', 'played', 'skipped', 'all']
         sc = mcp({'view': 'inbox', 'show_id': a})['structuredContent']
         assert titles(sc) == ['a1', 'a2', 'a3'] and sc['filters']['shows'][0]['id'] == b
         assert titles(mcp({'view': 'inbox', 'kind': 'youtube', 'show_id': y})['structuredContent']) == ['y1']
@@ -848,7 +848,7 @@ def test_feed_states_show_filter_sort_paging_and_chips():
         # default: unplayed = new + started in one list, newest first; played and back catalogue hidden
         st, d = get(f'?show_id={a}')
         assert st == 200 and titles(d) == ['n2', 'st', 'n1'] and d['total'] == 3
-        assert d['filter'] == {'show_id': a, 'state': 'unplayed', 'sort': 'newest'}
+        assert d['filter'] == {'show_id': a, 'state': 'unplayed', 'sort': 'newest', 'q': ''}
         st, d = get(f'?show_id={a}&sort=oldest')
         assert titles(d) == ['n1', 'st', 'n2']
         assert titles(get(f'?show_id={a}&state=started')[1]) == ['st']
@@ -1126,7 +1126,7 @@ def test_view_three_button_nav():
     # wide: the bar comes before the content; no other controls above the feed
     body = html.split('<div class="wz-app pc-app">')[1]
     assert body.index('id="nav"') < body.index('<main')
-    assert re.findall(r'<button[^>]*\bid="([^"]+)"', body.split('<main')[0]) == buttons + ['filter-pill']
+    assert re.findall(r'<button[^>]*\bid="([^"]+)"', body.split('<main')[0]) == buttons + ['filter-pill', 'q-pill']
     # toggles show their state; Filters only narrows My feed
     assert "setAttribute('aria-current', 'page')" in js and '[aria-current="page"]' in css
     assert "$('nav-feed').onclick = () => setTab('feed')" in js and "$('nav-discover').onclick = () => setTab('discover')" in js
@@ -1145,3 +1145,156 @@ def test_view_three_button_nav():
     assert "$('back-btn').onclick = () => popView()" in js and "$('backrow').hidden = !state.stack.length" in js
     # no Podcasts/YouTube filter, no chips row or Find/Shows buttons left behind
     assert 'YouTube' not in html and 'holdable' not in js and 'renderChips' not in js
+
+
+# ------------------------------------------------------------------ 0.4.1: episode search, phone scroll, mini player
+
+def test_feed_search_q_titles_shows_notes_case_insensitive_and_mcp():
+    """q searches every episode of the followed shows (not only a loaded page): title, show name and notes, all words,
+    case-insensitive (ASCII and Unicode), combined with show/state/sort; MCP podcasts_list takes the same q."""
+    now = int(time.time())
+    t0 = now + 4 * 10 ** 7
+
+    def seed(c):
+        a = c.execute('INSERT INTO shows (feed_url, title, added_at, last_checked) VALUES (?,?,?,?)',
+                      ('https://feeds.example.com/q-a.xml', 'The Zorblat Hour', now, now)).lastrowid
+        b = c.execute('INSERT INTO shows (feed_url, title, added_at, last_checked) VALUES (?,?,?,?)',
+                      ('https://feeds.example.com/q-b.xml', 'Other Quuxcast', now, now)).lastrowid
+        rows = [(a, 'qa1', 'Morning chat', '<p>about <b>Fermentation</b> today</p>', 1, 0),
+                (a, 'qa2', 'Evening chat', '<p>nothing here</p>', 1, 0),
+                (a, 'qa3', 'Old played one on fermentation', '', 0, 1),
+                (b, 'qb1', 'ÉCOLE special 100% real', '<p>Straße notes</p>', 1, 0),
+                (b, 'qb2', 'Fermentation deep dive with Zorblat guest', '', 1, 0)]
+        for i, (sid, guid, title, notes, ib, played) in enumerate(rows):
+            c.execute('INSERT INTO episodes (show_id, guid, title, published, enclosure_url, first_seen, inbox, played, notes) '
+                      'VALUES (?,?,?,?,?,?,?,?,?)', (sid, guid, title, t0 + i, 'https://cdn.example.com/' + guid + '.mp3', now, ib, played, notes))
+        return a, b
+    a, b = P.write(seed)
+    try:
+        def get(qs):
+            r, body = req('GET', '/api/feed' + qs)
+            return r.status, json.loads(body)
+
+        def guids(d):
+            return sorted(e['title'] for e in d['episodes'])
+
+        # show name (case-insensitive) matches all its waiting episodes plus an episode of another show naming it
+        st, d = get('?q=zorBLAT')
+        assert st == 200 and d['total'] == 3 and d['filter']['q'] == 'zorblat'
+        assert guids(d) == ['Evening chat', 'Fermentation deep dive with Zorblat guest', 'Morning chat']
+        # notes text, not only titles; the default state hides the played one, state=all finds it
+        assert guids(get('?q=FERMENTATION')[1]) == ['Fermentation deep dive with Zorblat guest', 'Morning chat']
+        assert get('?q=fermentation&state=all')[1]['total'] == 3
+        assert guids(get('?q=fermentation&state=played')[1]) == ['Old played one on fermentation']
+        # every word must match somewhere; combined with the show filter
+        assert guids(get('?q=fermentation%20zorblat')[1]) == ['Fermentation deep dive with Zorblat guest', 'Morning chat']
+        assert guids(get(f'?q=fermentation&show_id={b}')[1]) == ['Fermentation deep dive with Zorblat guest']
+        # Unicode case folding and LIKE wildcards taken literally
+        assert guids(get('?q=%C3%A9cole')[1]) == ['ÉCOLE special 100% real']
+        assert guids(get('?q=%C3%89cOLE')[1]) == ['ÉCOLE special 100% real'] and guids(get('?q=stra%C3%9Fe')[1]) == ['ÉCOLE special 100% real']
+        assert get('?q=100%25')[1]['total'] == 1 and get('?q=10_%25')[1]['total'] == 0
+        # paging is server-side over every match
+        st, d = get('?q=chat&limit=1&offset=1')
+        assert d['total'] == 2 and len(d['episodes']) == 1
+        # nothing found, empty q is no search, too long is a 400
+        assert get('?q=nomatchword')[1]['total'] == 0
+        assert get(f'?q=&show_id={a}')[1]['filter']['q'] == '' and get(f'?q=%20%20&show_id={a}')[1]['total'] == 2
+        assert get('?q=' + 'x' * 201)[0] == 400
+        # MCP: q defaults to view=feed; state all reaches played episodes; inbox narrows Up next
+        def mcp(args):
+            r, body = req('POST', '/mcp', {'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call', 'params': {'name': 'podcasts_list', 'arguments': args}})
+            return json.loads(body)['result']
+        sc = mcp({'q': 'Fermentation', 'state': 'all'})['structuredContent']
+        assert sc['total'] == 3 and sc['filter']['state'] == 'all'
+        sc = mcp({'view': 'inbox', 'q': 'zorblat'})['structuredContent']
+        assert sorted(e['title'] for e in sc['continue'] + sc['new']) == ['Evening chat', 'Fermentation deep dive with Zorblat guest', 'Morning chat']
+        assert sc['filter']['q'] == 'zorblat'
+        tools = json.loads(req('POST', '/mcp', {'jsonrpc': '2.0', 'id': 1, 'method': 'tools/list'})[1])['result']['tools']
+        props = [t for t in tools if t['name'] == 'podcasts_list'][0]['inputSchema']['properties']
+        assert props['q']['type'] == 'string' and 'feed' in props['view']['enum']
+    finally:
+        P.write(lambda c: [c.execute('DELETE FROM episodes WHERE show_id=?', (i,)) or c.execute('DELETE FROM shows WHERE id=?', (i,)) for i in (a, b)])
+
+
+def _pure_js(script):
+    import shutil
+    import subprocess
+    node = shutil.which('node')
+    if not node:
+        pytest.skip('node not installed')
+    js = (ROOT / 'web/app.js').read_text()
+    pure = js.split('/* pure:start')[1].split('/* pure:end */')[0].split('*/', 1)[1]
+    out = subprocess.run([node, '-e', pure + script], capture_output=True, text=True, timeout=30, env={'TZ': 'UTC', 'PATH': '/usr/bin:/bin'})
+    assert out.returncode == 0, out.stderr
+    return json.loads(out.stdout)
+
+
+def test_phone_scroll_never_yanked_regression():
+    """0.4.0 regression: a ResizeObserver re-applied the bottom gap on every resize (mini player, dock, a skipped row
+    collapsing, new rows), so script wrote scrollTop while the owner was scrolled up or mid-fling and the list jumped
+    or stopped dead. 0.4.1: re-pin only when pinned (gap 0) and the owner is not touching/flinging; feed re-renders wait
+    for the scroll to rest; overscroll is contained; row swipe only on clearly horizontal moves."""
+    got = _pure_js('''
+console.log(JSON.stringify({
+  pinnedIdle: shouldRepin(0, false), pinnedBusy: shouldRepin(0, true), upIdle: shouldRepin(240, false), upBusy: shouldRepin(240, true),
+  swipe: [swipeIntent(-6, 2), swipeIntent(-20, 3), swipeIntent(-30, 12), swipeIntent(-14, 11), swipeIntent(-30, 20), swipeIntent(2, 30), swipeIntent(15, 0), swipeIntent(-45, 25)],
+  mini: [miniDragIntent(0, 4), miniDragIntent(2, 14), miniDragIntent(20, 14), miniDragIntent(0, -14), miniDragIntent(16, 0)],
+}));''')
+    assert got['pinnedIdle'] is True and got['pinnedBusy'] is False and got['upIdle'] is False and got['upBusy'] is False
+    assert got['swipe'] == ['', 'swipe', 'swipe', 'scroll', 'scroll', 'scroll', 'scroll', 'scroll']
+    assert got['mini'] == ['', 'drag', 'none', 'none', 'none']
+    js = (ROOT / 'web/app.js').read_text()
+    css = (ROOT / 'web/styles.css').read_text()
+    # the observer goes through the policy (and waits for idle), never straight to keepGap
+    ro = js.split('const bottomKeeper = new ResizeObserver(')[1].split(');\n')[0]
+    assert 'gap === 0' in ro and 'whenIdle(repin)' in ro and 'keepGap()' not in ro
+    assert 'const repin = () => { if (feedShown() && shouldRepin(gap, busy())) keepGap(); };' in js
+    # a feed reload renders only when the owner's scroll has come to rest
+    assert 'whenIdle(() => {' in js.split('async function loadFeed(')[1].split('\n}\n')[0]
+    # swipe-to-skip asks swipeIntent and never starts during a fling
+    sw = js.split('function swipeable(')[1].split('\n}\n')[0]
+    assert 'swipeIntent(mx, my)' in sw and 'busy()' in sw
+    # one scroll container that never chains overscroll into the shell
+    assert '#main { overscroll-behavior: contain; }' in css
+
+
+def test_view_mini_player_close_center_and_reliable_toggle():
+    """Mini player: play/pause centred on phone with a 44px+ target, its icon swapped only on a state change (0.4.0
+    replaced it 4x a second, losing taps), close X (pause, save, hide; remembered until something plays), swipe down."""
+    html = (ROOT / 'web/index.html').read_text()
+    js = (ROOT / 'web/app.js').read_text()
+    css = (ROOT / 'web/styles.css').read_text()
+    mini = html.split('id="mini"')[1].split('</footer>')[0]
+    for bit in ('id="mini-open"', 'id="mini-toggle"', 'id="mini-close"', 'aria-label="Close player"', 'id="mini-progress"', 'id="mini-title"'):
+        assert bit in mini, bit
+    paint = js.split('function paintPlayer()')[1].split('\n}\n')[0]
+    assert "replaceChildren(icon(" not in paint and "setIcon($('mini-toggle')" in paint
+    assert "if (btn.dataset.icon === name) return;" in js
+    assert '.pc-app button svg, .pc-app button img' in css and 'pointer-events: none' in css
+    close = js.split('async function closePlayer()')[1].split('\n}\n')[0]
+    assert close.index('saveProgress(true)') < close.index('unloadPlayer()') and 'MINI_KEY' in close
+    assert 'stopPropagation' in js.split("$('mini-toggle').addEventListener('click'")[1].split('\n')[0]
+    assert '!miniClosed(data.now_playing)' in js and 'localStorage.removeItem(MINI_KEY)' in js.split('function playEpisode(')[1].split('\n}\n')[0]
+    narrow = css.split('@container wz-app (width < 700px)')[1].split('\n}\n')[0]
+    assert 'grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr)' in narrow and '.pc-mini-toggle { width: 52px; height: 52px;' in narrow
+    assert '.pc-mini-x { flex: none; width: 44px; height: 44px;' in css
+
+
+def test_view_041_gear_nav_and_search_sheet():
+    """Settings gear sits at the end of Discover's search row (no top gear); phone nav is a compact centred control
+    (label only on the chosen tab); the Filters sheet starts with 'Search episodes' and an active search is a pill."""
+    html = (ROOT / 'web/index.html').read_text()
+    js = (ROOT / 'web/app.js').read_text()
+    css = (ROOT / 'web/styles.css').read_text()
+    form = html.split('id="search-form"')[1].split('</form>')[0]
+    assert 'id="open-settings"' in form and form.index('id="search-input"') < form.index('id="open-settings"')
+    assert html.count('id="open-settings"') == 1 and 'position: absolute; top: 6px; right: -6px' not in css
+    narrow = css.split('@container wz-app (width < 700px)')[1].split('\n}\n')[0]
+    assert 'padding-top: 48px' not in narrow and 'flex-direction: column' not in narrow.split('.pc-nav-b')[1].split('}')[0]
+    assert '.pc-nav-b:not([aria-current="page"]) .pc-nav-l' in narrow and 'justify-content: center' in narrow
+    sheet = js.split('function openFilters()')[1].split('\n}\n')[0]
+    assert sheet.index('searchField()') < sheet.index('grid,')
+    assert "placeholder: 'Search episodes'" in js and "qs.set('q', filter.q)" in js
+    assert "$('q-pill').onclick = () => setFilter({ q: '' })" in js and 'id="q-pill"' in html
+    # search words are never saved; Unplayed turns into All while searching and comes back after
+    assert "const keep = { show: filter.show, state: stateBeforeSearch || filter.state, sort: filter.sort }" in js
