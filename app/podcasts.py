@@ -110,6 +110,7 @@ def connect():
     DATA.mkdir(parents=True, exist_ok=True)
     c = sqlite3.connect(DB_PATH, timeout=15)
     c.row_factory = sqlite3.Row
+    c.create_function('pc_fold', 1, lambda s: (s or '').casefold(), deterministic=True)
     c.execute('PRAGMA foreign_keys=ON')
     c.execute('PRAGMA journal_mode=WAL')
     return c
@@ -625,7 +626,7 @@ def _show_kind(feed_url):
     return 'youtube' if youtube.is_feed(feed_url) else 'podcast'
 
 
-def inbox(limit=100, show_id=None, kind=None, state=None, sort=None, since=None):
+def inbox(limit=100, show_id=None, kind=None, state=None, sort=None, since=None, query=None):
     """Up next. Optional filters: show_id (one show), kind ('podcast'|'youtube'), state ('started'|'unplayed'),
     since (unix seconds: only episodes published at or after it). sort ('newest' default | 'oldest') orders `new` by
     publish date; `continue` stays most recently listened first. `filters` always describes the whole, unfiltered
@@ -656,6 +657,7 @@ def inbox(limit=100, show_id=None, kind=None, state=None, sort=None, since=None)
     else:
         show_id = None
     kind, state = kind or None, state or None
+    terms = search_terms(query)
     limit = max(1, min(int(limit), 500))
     cont = q(EP_SELECT + 'WHERE e.position>0 AND e.played=0 AND e.skipped=0 ORDER BY e.position_at DESC LIMIT 20')
     seen = {r['id'] for r in cont}
@@ -693,28 +695,76 @@ def inbox(limit=100, show_id=None, kind=None, state=None, sort=None, since=None)
     if since is not None:
         cont = [r for r in cont if (r['published'] or 0) >= since]
         new = [r for r in new if (r['published'] or 0) >= since]
+    if terms:
+        cont = [r for r in cont if matches_terms(r, terms, r['show_title'])]
+        new = [r for r in new if matches_terms(r, terms, r['show_title'])]
     if sort == 'oldest':
         new = sorted(new, key=lambda r: (r['published'] or 0, r['id']))
     np = now_playing()
     return {'continue': [episode_dict(r) for r in cont], 'new': [episode_dict(r) for r in new[:limit]], 'now_playing': np,
-            'filter': {'show_id': show_id, 'kind': kind, 'state': state, 'sort': sort, 'since': since},
+            'filter': {'show_id': show_id, 'kind': kind, 'state': state, 'sort': sort, 'since': since, 'q': ' '.join(terms)},
             'filters': filters}
 
 
-FEED_STATES = ('unplayed', 'started', 'played', 'skipped')
+FEED_STATES = ('unplayed', 'started', 'played', 'skipped', 'all')
 _FEED_WHERE = {'unplayed': '(e.inbox=1 OR e.position>0) AND e.played=0 AND e.skipped=0',
                'started': 'e.position>0 AND e.played=0 AND e.skipped=0',
                'played': 'e.played=1',
-               'skipped': 'e.skipped=1 AND e.played=0'}
+               'skipped': 'e.skipped=1 AND e.played=0',
+               'all': '1=1'}
+SEARCH_MAX = 200
 
 
-def feed(show_id=None, state=None, sort=None, limit=100, offset=0):
+def search_terms(text):
+    """Words of a search (0.4.1), case-folded; every word must appear in the episode title, show name or notes."""
+    if text is None:
+        return []
+    if not isinstance(text, str):
+        raise Problem(400, 'q must be text.')
+    text = ' '.join(text.split())
+    if len(text) > SEARCH_MAX:
+        raise Problem(400, f'q is longer than {SEARCH_MAX} characters.')
+    return [_Term(w) for w in text.split(' ') if w][:8]
+
+
+class _Term(str):
+    """A case-folded search word that remembers whether the typed word was plain ASCII (then SQLite's LIKE, which is
+    case-insensitive for ASCII, can match it; 'Straße' folds to 'strasse' and must go through pc_fold instead)."""
+    def __new__(cls, word):
+        t = super().__new__(cls, word.casefold())
+        t.plain = word.isascii()
+        return t
+
+
+def _search_sql(terms):
+    """SQL + args: each term in title, show title or notes (case-insensitive, Unicode-aware via pc_fold)."""
+    where, args = '', []
+    for t in terms:
+        if t.plain:  # LIKE is case-insensitive for ASCII and runs in C
+            pat = '%' + t.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_') + '%'
+            where += " AND (e.title LIKE ? ESCAPE '\\' OR s.title LIKE ? ESCAPE '\\' OR e.notes LIKE ? ESCAPE '\\')"
+        else:
+            pat = t
+            where += ' AND (instr(pc_fold(e.title), ?) OR instr(pc_fold(s.title), ?) OR instr(pc_fold(e.notes), ?))'
+        args += [pat, pat, pat]
+    return where, args
+
+
+def matches_terms(row, terms, show_title=''):
+    hay = ' '.join([(row['title'] or ''), show_title or '', (row['notes'] or '')]).casefold()
+    return all(t in hay for t in terms)
+
+
+def feed(show_id=None, state=None, sort=None, limit=100, offset=0, query=None):
     """The screen's one list (0.3): episodes from followed shows in publish order, started ones included in place.
-    state 'unplayed' (default: new + started, not finished, not skipped), 'started', 'played' or 'skipped'; optional show_id; sort 'newest'
-    (default) | 'oldest'; paged with limit/offset. 'shows' lists every followed show, newest episode first."""
+    state 'unplayed' (default: new + started, not finished, not skipped), 'started', 'played', 'skipped' or 'all'; optional show_id;
+    optional query (API/MCP `q`, 0.4.1: words searched case-insensitively in episode titles, show names and show notes, across every episode of
+    the followed shows that the other filters allow); sort 'newest' (default) | 'oldest'; paged with limit/offset.
+    'shows' lists every followed show, newest episode first."""
     state = state or 'unplayed'
     if state not in FEED_STATES:
-        raise Problem(400, "state must be 'unplayed', 'started', 'played' or 'skipped'.")
+        raise Problem(400, "state must be 'unplayed', 'started', 'played', 'skipped' or 'all'.")
+    terms = search_terms(query)
     sort = sort or 'newest'
     if sort not in INBOX_SORTS:
         raise Problem(400, "sort must be 'newest' or 'oldest'.")
@@ -731,8 +781,12 @@ def feed(show_id=None, state=None, sort=None, limit=100, offset=0):
     if show_id is not None:
         where += ' AND e.show_id=?'
         args.append(show_id)
+    if terms:
+        extra, more = _search_sql(terms)
+        where += extra
+        args += more
     order = 'e.published ASC, e.id ASC' if sort == 'oldest' else 'e.published DESC, e.id DESC'
-    total = q('SELECT COUNT(*) n FROM episodes e WHERE ' + where, args, one=True)['n']
+    total = q('SELECT COUNT(*) n FROM episodes e JOIN shows s ON s.id=e.show_id WHERE ' + where, args, one=True)['n']
     rows = q(EP_SELECT + 'WHERE ' + where + ' ORDER BY ' + order + ' LIMIT ? OFFSET ?', args + [limit, offset])
     waiting = {r['show_id']: r['n'] for r in q('SELECT show_id, COUNT(*) n FROM episodes e WHERE ' + _FEED_WHERE['unplayed'] + ' GROUP BY show_id')}
     shows = []
@@ -742,7 +796,7 @@ def feed(show_id=None, state=None, sort=None, limit=100, offset=0):
         d.update({'short_title': short_title(d['title']), 'latest': s['latest'] or 0, 'unplayed': waiting.get(s['id'], 0)})
         shows.append(d)
     return {'episodes': [episode_dict(r) for r in rows], 'total': total, 'offset': offset,
-            'filter': {'show_id': show_id, 'state': state, 'sort': sort}, 'shows': shows, 'now_playing': now_playing()}
+            'filter': {'show_id': show_id, 'state': state, 'sort': sort, 'q': ' '.join(terms)}, 'shows': shows, 'now_playing': now_playing()}
 
 
 def now_playing():

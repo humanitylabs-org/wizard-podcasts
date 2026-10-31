@@ -19,7 +19,7 @@ from podcasts import Problem  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 APP_ID = 'wizard-podcasts'
-VERSION = '0.4.0'
+VERSION = '0.4.1'
 PORT = int(os.environ.get('PORT', '9207'))
 PREFIX = '/' + APP_ID
 STATIC_TYPES = {'.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8',
@@ -68,13 +68,14 @@ TOOLS = [
     {'name': 'podcasts_subscribe', 'description': 'Follow a podcast by its public RSS/Atom feed URL, or a YouTube channel by its URL (youtube.com/@handle, /channel/UC...) or bare @handle; YouTube episodes are long-form uploads (no Shorts), downloaded as audio only through the YouTube Music app. Idempotent. The newest episode goes to Up next and downloads automatically when auto-download is on; new episodes keep arriving in the background.',
      'inputSchema': {'type': 'object', 'properties': {'feed_url': {'type': 'string', 'description': 'http(s) feed address, YouTube channel URL, or @handle.'},
                                                       'auto_download': {'type': 'boolean'}}, 'required': ['feed_url']}},
-    {'name': 'podcasts_list', 'description': "List shows (no show_id), or one show's episodes newest first (show_id). view='inbox' returns Up next: 'continue' (started, unfinished) then 'new' episodes; filter it with show_id (one show), kind ('podcast' or 'youtube'), state ('started' or 'unplayed') and/or since (unix seconds; only episodes published at or after it); sort 'newest' (default) or 'oldest' orders 'new' by publish date. Every episode has 'published' (unix seconds). Its 'filters' lists the shows in Up next (newest episode first, with unplayed counts) and kind counts, always unfiltered. Episode rows include id, played, position (seconds), duration and download state.",
-     'inputSchema': {'type': 'object', 'properties': {'view': {'type': 'string', 'enum': ['shows', 'inbox', 'episodes']},
+    {'name': 'podcasts_list', 'description': "List shows (no show_id), or one show's episodes newest first (show_id). view='inbox' returns Up next: 'continue' (started, unfinished) then 'new' episodes; filter it with show_id (one show), kind ('podcast' or 'youtube'), state ('started' or 'unplayed') and/or since (unix seconds; only episodes published at or after it); sort 'newest' (default) or 'oldest' orders 'new' by publish date. Every episode has 'published' (unix seconds). Its 'filters' lists the shows in Up next (newest episode first, with unplayed counts) and kind counts, always unfiltered. Episode rows include id, played, position (seconds), duration and download state. q searches episodes: words matched case-insensitively in episode titles, show names and show notes; with view='feed' (the default when q is given) it searches every episode of the followed shows, narrowed by show_id, state ('unplayed' default, 'started', 'played', 'skipped' or 'all' for every episode) and sort, paged with limit/offset ({episodes, total}); with view='inbox' it narrows Up next.",
+     'inputSchema': {'type': 'object', 'properties': {'view': {'type': 'string', 'enum': ['shows', 'inbox', 'episodes', 'feed']},
+                                                      'q': {'type': 'string', 'maxLength': 200, 'description': 'search words (episode title, show name, notes); view=feed or inbox'},
                                                       'show_id': {'type': 'integer'}, 'limit': {'type': 'integer', 'minimum': 1, 'maximum': 500},
                                                       'offset': {'type': 'integer', 'minimum': 0},
                                                       'kind': {'type': 'string', 'enum': ['podcast', 'youtube'], 'description': 'view=inbox only'},
-                                                      'state': {'type': 'string', 'enum': ['started', 'unplayed'], 'description': 'view=inbox only'},
-                                                      'sort': {'type': 'string', 'enum': ['newest', 'oldest'], 'description': 'view=inbox only; orders new episodes by publish date (default newest)'},
+                                                      'state': {'type': 'string', 'enum': ['started', 'unplayed', 'played', 'skipped', 'all'], 'description': "view=inbox: 'started' or 'unplayed'; view=feed: any (default 'unplayed')"},
+                                                      'sort': {'type': 'string', 'enum': ['newest', 'oldest'], 'description': 'view=inbox or feed; orders by publish date (default newest)'},
                                                       'since': {'type': 'integer', 'minimum': 0, 'description': 'view=inbox only; unix seconds, only episodes published at or after it'}}}},
     {'name': 'podcasts_episode', 'description': 'One episode in full: show notes (sanitized html and plain text), publish date, duration, saved position, played flag, download state, file (path relative to the Podcasts app data folder when downloaded), enclosure_url, and a transcript field (not available yet; v2 will use the Transcriber app).',
      'inputSchema': {'type': 'object', 'properties': {'episode_id': {'type': 'integer'}}, 'required': ['episode_id']}},
@@ -96,9 +97,11 @@ def call_tool(name, a):
             raise Problem(400, 'auto_download must be true or false.')
         return P.subscribe(a.get('feed_url') or a.get('url'), ad)
     if name == 'podcasts_list':
-        view = a.get('view') or ('episodes' if a.get('show_id') is not None else 'shows')
+        view = a.get('view') or ('feed' if a.get('q') else 'episodes' if a.get('show_id') is not None else 'shows')
         if view == 'inbox':
-            return P.inbox(int(a.get('limit') or 100), a.get('show_id'), a.get('kind'), a.get('state'), a.get('sort'), a.get('since'))
+            return P.inbox(int(a.get('limit') or 100), a.get('show_id'), a.get('kind'), a.get('state'), a.get('sort'), a.get('since'), a.get('q'))
+        if view == 'feed':
+            return P.feed(a.get('show_id'), a.get('state'), a.get('sort'), a.get('limit') or 100, a.get('offset') or 0, a.get('q'))
         if view == 'episodes':
             if a.get('show_id') is None:
                 raise Problem(400, 'Pass show_id to list episodes.')
@@ -226,10 +229,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send(200, P.list_shows())
             if path == '/api/feed':
                 qs = self.query()
-                return self.send(200, P.feed(qs.get('show_id'), qs.get('state'), qs.get('sort'), _qint(qs.get('limit'), 100), _qint(qs.get('offset'), 0)))
+                return self.send(200, P.feed(qs.get('show_id'), qs.get('state'), qs.get('sort'), _qint(qs.get('limit'), 100), _qint(qs.get('offset'), 0), qs.get('q')))
             if path == '/api/inbox':
                 qs = self.query()
-                return self.send(200, P.inbox(_qint(qs.get('limit'), 100), qs.get('show_id'), qs.get('kind'), qs.get('state'), qs.get('sort'), qs.get('since')))
+                return self.send(200, P.inbox(_qint(qs.get('limit'), 100), qs.get('show_id'), qs.get('kind'), qs.get('state'), qs.get('sort'), qs.get('since'), qs.get('q')))
             if path == '/api/settings':
                 return self.send(200, P.get_settings())
             if path == '/api/opml':

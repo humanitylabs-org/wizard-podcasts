@@ -1,6 +1,10 @@
 /* Podcasts-only layout. Colours, type and surfaces come from the kit (wizard-ui.css) and the active skin;
  * never a literal colour here. Tappable surfaces mix ink into the canvas so they stay readable over glass. */
 [hidden] { display: none !important; }
+/* icons inside buttons never take the tap themselves (a swapped icon must not swallow a click) */
+.pc-app button svg, .pc-app button img, .wz-sheet button svg { pointer-events: none; }
+/* one scroll container; its overscroll never chains into the shell */
+#main { overscroll-behavior: contain; }
 .pc-app, .wz-sheet {
   --solid: color-mix(in srgb, var(--ink) 8%, var(--canvas));
   --solid-2: color-mix(in srgb, var(--ink) 15%, var(--canvas));
@@ -39,13 +43,15 @@
 .pc-nav-filter { margin-left: auto; background: var(--fill); border: 1px solid var(--line); }
 .pc-dot { position: absolute; top: -3px; right: -4px; width: 8px; height: 8px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 2px var(--wz-panel, var(--canvas)); }
 /* the active show filter: one pill over the feed, tap clears it */
-.pc-pillbar { flex: none; display: flex; padding: 0 var(--wz-gutter) 6px; }
-.pc-pill { display: inline-flex; align-items: center; gap: 8px; max-width: 100%; min-height: 44px; padding: 4px 10px 4px 4px; border-radius: var(--r-pill);
+.pc-pillbar { flex: none; display: flex; gap: 6px; min-width: 0; padding: 0 var(--wz-gutter) 6px; }
+.pc-pill { display: inline-flex; align-items: center; gap: 8px; min-width: 0; max-width: 100%; min-height: 44px; padding: 4px 10px 4px 4px; border-radius: var(--r-pill);
   background: var(--accent); color: var(--on-accent); font-size: var(--wz-text-md, .875rem); font-weight: 600; }
 .pc-pill-art { flex: none; width: 34px; height: 34px; border-radius: 50%; object-fit: cover; }
 .pc-pill-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pc-pill svg { flex: none; width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 2.2; stroke-linecap: round; }
 .pc-pill:not(:has(img:not([hidden]))) { padding-left: 14px; }
+.pc-pill-q { padding-left: 12px; }
+.pc-pill svg.pc-pill-mag { width: 17px; height: 17px; }
 /* show chips (the Filters sheet's show picker) */
 .pc-chip { flex: none; display: inline-flex; align-items: center; gap: 7px; min-width: 0; min-height: 44px; padding: 4px 12px 4px 4px; border-radius: var(--r-pill);
   background: var(--fill); border: 1px solid var(--line); color: var(--ink-2); font-size: var(--wz-text-md, .875rem); font-weight: 600; white-space: nowrap; text-align: left; }
@@ -108,9 +114,9 @@
 
 /* discover: search box (+ the settings gear in the top corner), results or the followed shows */
 .pc-view { position: relative; }
-.pc-gear { position: absolute; top: 6px; right: -6px; z-index: 3; width: 44px; height: 44px; }
+.pc-gear { align-self: flex-start; width: 44px; height: 44px; margin-right: -6px; }
 .pc-gear svg { width: 20px; height: 20px; }
-.pc-search { display: flex; gap: 4px; align-items: center; padding: 6px 44px 6px 0; }
+.pc-search { display: flex; gap: 6px; align-items: center; padding: 6px 0; }
 .pc-search .wz-field { flex: 1; height: 48px; font-size: 1rem; }
 .pc-result .wz-row { cursor: default; }
 .pc-ep.pc-result .wz-main small { display: block; overflow: hidden; text-overflow: ellipsis; }
@@ -184,6 +190,15 @@
 .pc-icon:active { background: var(--fill); }
 .pc-icon svg { width: 26px; height: 26px; }
 .pc-app[data-view="player"] .pc-mini { display: none; }
+.pc-mini { transform: translateY(var(--mdy, 0px)); transition: transform .2s ease; }
+.pc-mini.pc-mini-drag { transition: none; }
+.pc-mini-toggle, .pc-mini-x { touch-action: manipulation; -webkit-tap-highlight-color: transparent; }
+.pc-mini-end { flex: none; display: flex; align-items: center; }
+.pc-mini-time { display: none; }
+.pc-mini-x { flex: none; width: 44px; height: 44px; border-radius: 50%; display: grid; place-items: center; color: var(--ink-3); }
+.pc-mini-x svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 2.2; stroke-linecap: round; }
+.pc-mini-x:active { background: var(--fill); color: var(--ink); }
+@media (hover: hover) { .pc-mini-x:hover { background: var(--fill); color: var(--ink); } }
 
 /* toast with Undo, above the dock (and so above the phone's nav bar) */
 .pc-toast { position: absolute; left: 12px; right: 12px; bottom: calc(100% + 8px); z-index: 5; display: flex; align-items: center; gap: 12px; min-height: 48px; padding: 4px 6px 4px 16px; border-radius: var(--r); background: var(--solid-2); border: 1px solid var(--line-2); color: var(--ink); font-size: var(--wz-text-md, .875rem); box-shadow: 0 8px 28px color-mix(in srgb, var(--wz-base) 50%, transparent); }
@@ -200,26 +215,42 @@
   .pc-app > #status { order: 2; }
   .pc-app > .pc-pillbar { order: 3; padding-top: 6px; }
   .pc-app > .pc-dock { order: 4; padding-bottom: 0; }
-  .pc-app > .pc-nav { order: 5; gap: 0; padding: 4px 4px calc(4px + env(safe-area-inset-bottom, 0px)); border-top: 1px solid var(--line);
+  /* the bottom bar (0.4.1): one compact centred control like the desktop pair; icons only, the chosen tab adds its
+   * short label inline; 44px hit areas, the drawn pill is smaller */
+  .pc-app > .pc-nav { order: 5; justify-content: center; gap: 10px; padding: 4px 12px calc(4px + env(safe-area-inset-bottom, 0px)); border-top: 1px solid var(--line);
     background: var(--wz-panel, color-mix(in srgb, var(--wz-text) 10%, var(--wz-base))); }
   .pc-app:has(#mini:not([hidden])) > .pc-nav { border-top-color: transparent; }
-  .pc-navpair { display: contents; }
-  .pc-nav-b { flex: 1 1 0; flex-direction: column; gap: 3px; min-height: 54px; padding: 4px 2px; margin: 0; border: 0; border-radius: var(--r-tile); background: none;
-    font-size: var(--wz-text-sm, .8125rem); }
-  .pc-nav-i { width: 58px; height: 30px; border-radius: var(--r-pill); }
-  .pc-nav-b[aria-current="page"] { background: none; color: var(--ink); }
-  .pc-nav-b[aria-current="page"] .pc-nav-i { background: var(--accent); color: var(--on-accent); }
-  .pc-nav-filter { margin-left: 0; background: none; border: 0; }
-  .pc-dot { top: 2px; right: 14px; }
-  @media (hover: hover) { .pc-nav-b:not([aria-current="page"]):not(:disabled):hover { background: var(--fill); } }
+  .pc-navpair { gap: 0; padding: 0; }
+  .pc-nav-b { isolation: isolate; gap: 6px; min-width: 48px; min-height: 44px; padding: 0 12px; background: none; font-size: var(--wz-text-sm, .8125rem); }
+  .pc-nav-b::before { content: ""; position: absolute; inset: 4px 3px; z-index: -1; border-radius: var(--r-pill); }
+  .pc-nav-b[aria-current="page"] { background: none; padding: 0 15px 0 13px; }
+  .pc-nav-b[aria-current="page"]::before { background: var(--accent); }
+  .pc-nav-b:not([aria-current="page"]) .pc-nav-l, .pc-nav-filter .pc-nav-l { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+  .pc-nav-filter { margin-left: 0; width: 46px; padding: 0; }
+  .pc-nav-filter::before { inset: 3px; }
+  @media (hover: hover) { .pc-nav-b:not([aria-current="page"]):not(:disabled):hover { background: none; } .pc-nav-b:not([aria-current="page"]):not(:disabled):hover::before { background: var(--fill-2); } }
+  .pc-nav-b:not([aria-current="page"]):active::before { background: var(--fill-2); }
+  /* mini player: play/pause in the middle of the bar; title on the left, time left + close on the right; swipe down closes */
+  .pc-mini { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); gap: 4px; padding: 5px var(--wz-gutter, 12px); touch-action: none; }
+  .pc-mini-end { margin-right: -8px; }
+  .pc-mini-open { min-height: 50px; gap: 9px; }
+  .pc-mini-text b { white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; line-height: 1.22; }
+  .pc-mini-left { display: none; }
+  .pc-mini-toggle { width: 52px; height: 52px; position: relative; isolation: isolate; color: var(--on-accent); }
+  .pc-mini-toggle::before { content: ""; position: absolute; inset: 5px; z-index: -1; border-radius: 50%; background: var(--accent); }
+  .pc-mini-toggle:active { background: none; }
+  .pc-mini-toggle:active::before { transform: scale(.94); }
+  .pc-mini-toggle svg { width: 22px; height: 22px; }
+  .pc-mini-end { justify-self: end; gap: 2px; min-width: 0; }
+  .pc-mini-time { min-width: 0; font-size: var(--wz-text-sm, .8125rem); line-height: 1.2; color: var(--ink-3); text-align: right;
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
   /* lists sit on the bottom edge when short; More (older) is on top */
   #view-feed:not([hidden]), #view-discover:not([hidden]) { display: flex; flex-direction: column; justify-content: flex-end; min-height: 100%; }
   #view-feed > .pc-more { order: -1; }
   .pc-none { padding: 0 0 32px; }
   /* discover: the gear keeps its top corner; the search box is a composer at the bottom, rows above it (best match
    * and newest show lowest) */
-  #view-discover:not([hidden]) { padding-top: 48px; }
-  .pc-gear { top: 0; }
+  .pc-gear { align-self: center; }
   .pc-app[data-view="discover"] > #main { padding-bottom: 0; }
   #search-results, #following-list { order: 1; }
   #search-note { order: 2; }
@@ -229,6 +260,9 @@
 
 /* the one sheet: filter segments, show actions, settings */
 #sheet-body { display: grid; gap: 10px; }
+.pc-qform { display: flex; }
+.pc-qinput { flex: 1; min-width: 0; height: 46px; font-size: 1rem; }
+.pc-seg-state .pc-seg-b { padding: 0 4px; }
 .pc-seg { display: flex; padding: 3px; border-radius: var(--r-pill); background: var(--fill); border: 1px solid var(--line); }
 .pc-seg-b { flex: 1 1 0; min-height: 44px; padding: 0 8px; border-radius: var(--r-pill); color: var(--ink-2); font-size: var(--wz-text-md, .875rem); font-weight: 600; white-space: nowrap; }
 .pc-seg-b[aria-pressed="true"] { background: var(--accent); color: var(--on-accent); }

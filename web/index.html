@@ -25,6 +25,7 @@
     </nav>
     <div class="pc-pillbar" id="pillbar" hidden>
       <button type="button" class="pc-pill" id="filter-pill"><img id="pill-art" class="pc-pill-art" alt="" hidden><span class="pc-pill-name" id="pill-name"></span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7l10 10M17 7 7 17"/></svg></button>
+      <button type="button" class="pc-pill pc-pill-q" id="q-pill" hidden><svg class="pc-pill-mag" viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6"/><path d="m15 15 5 5"/></svg><span class="pc-pill-name" id="q-pill-text"></span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7l10 10M17 7 7 17"/></svg></button>
     </div>
     <main class="wz-scroll" id="main">
       <div class="pc-backrow" id="backrow" hidden><button type="button" class="pc-back" id="back-btn" aria-label="Back"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 5l-7 7 7 7"/></svg></button></div>
@@ -39,10 +40,10 @@
       </section>
 
       <section id="view-discover" class="pc-view" aria-label="Discover" hidden>
-        <button type="button" class="pc-tool pc-gear" id="open-settings" aria-label="Settings"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></button>
         <form id="search-form" class="pc-search" autocomplete="off" role="search">
           <input id="search-input" class="wz-field" type="search" inputmode="search" enterkeyhint="search" maxlength="400"
                  aria-label="Search shows, or paste a feed address or @handle" placeholder="Search, or paste a feed or @handle">
+          <button type="button" class="pc-tool pc-gear" id="open-settings" aria-label="Settings"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></button>
         </form>
         <p id="search-note" class="pc-note" hidden></p>
         <ul class="wz-list" id="search-results" aria-label="Results" hidden></ul>
@@ -110,9 +111,10 @@
         <div class="pc-mini-bar"><i id="mini-progress"></i></div>
         <button type="button" class="pc-mini-open" id="mini-open" aria-label="Open player">
           <img id="mini-art" class="pc-art pc-art-sm" alt="" hidden>
-          <span class="pc-mini-text"><b id="mini-title"></b><small id="mini-sub"></small></span>
+          <span class="pc-mini-text"><b id="mini-title"></b><small><span id="mini-show"></span><span id="mini-left" class="pc-mini-left"></span></small></span>
         </button>
-        <button type="button" class="pc-icon" id="mini-toggle" aria-label="Play"></button>
+        <button type="button" class="pc-icon pc-mini-toggle" id="mini-toggle" aria-label="Play"></button>
+        <span class="pc-mini-end"><span class="pc-mini-time" id="mini-time" aria-hidden="true"></span><button type="button" class="pc-mini-x" id="mini-close" aria-label="Close player"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7l10 10M17 7 7 17"/></svg></button></span>
       </div>
     </footer>
 

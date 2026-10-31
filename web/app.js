@@ -122,6 +122,24 @@ function feedGroups(episodes, now, thumb) {
   }
   return groups;
 }
+// Scroll policy for the bottom-anchored phone lists (0.4.1). The list is only ever moved by script when the owner is
+// already at the bottom (gap 0) and is not touching or flinging it; scrolled up, a resize (mini player, dock, rows
+// collapsing) leaves his scroll position alone.
+function shouldRepin(gap, busy) { return gap === 0 && !busy; }
+// A touch on a feed row: 'swipe' (skip) only for a clearly horizontal leftward move, 'scroll' as soon as it looks
+// vertical (or rightward, the shell's Back), '' while undecided.
+function swipeIntent(mx, my) {
+  const ax = Math.abs(mx), ay = Math.abs(my);
+  if (mx <= -18 && ax > ay * 2.2) return 'swipe';
+  if (mx > 12 || (ay > 10 && ax <= ay * 2.2) || ax > 40) return 'scroll';
+  return '';
+}
+// Swipe down on the mini player closes it: a mostly vertical downward drag past the threshold.
+function miniDragIntent(dx, dy) {
+  if (dy > 10 && dy > Math.abs(dx) * 1.2) return 'drag';
+  if (Math.abs(dx) > 12 || dy < -10) return 'none';
+  return '';
+}
 /* pure:end */
 function el(tag, cls, text) {
   const n = document.createElement(tag);
@@ -181,7 +199,8 @@ function currentView() { return state.stack.length ? state.stack.at(-1).view : s
 function readThumb() { return getComputedStyle($('main')).getPropertyValue('--pc-thumb').trim() === '1'; }
 let thumb = readThumb();
 // The feed is anchored to its bottom: `gap` is how far the viewport's bottom sits above the newest row (0 = pinned).
-// Rows leaving, older pages arriving above, the dock growing: the bottom stays put.
+// 0.4.1: script only moves the list while it is pinned (or on open / filter change / jump to newest); once the owner
+// has scrolled up, nothing re-positions it, and nothing ever moves it while a finger is down or a fling is running.
 let gap = 0;
 function feedShown() { return thumb && currentView() === 'feed' && !$('view-feed').hidden; }
 function gapNow() { const m = $('main'); return Math.max(0, m.scrollHeight - m.scrollTop - m.clientHeight); }
@@ -191,14 +210,37 @@ let placed = -1;
 function setScroll(v) { const m = $('main'); m.scrollTop = v; placed = m.scrollTop; }
 function keepGap() { const m = $('main'); setScroll(m.scrollHeight - m.clientHeight - gap); }
 function toBottom() { setScroll($('main').scrollHeight); }
+// Is the owner handling the list right now (finger down, or a scroll he started still running)?
+let touching = false, userScrollAt = 0;
+const busy = () => touching || performance.now() - userScrollAt < 220;
+$('main').addEventListener('touchstart', () => { touching = true; }, { passive: true });
+for (const t of ['touchend', 'touchcancel']) $('main').addEventListener(t, () => { touching = false; }, { passive: true });
 $('main').addEventListener('scroll', () => {
-  if (!feedShown()) return;
-  if (Math.abs($('main').scrollTop - placed) < 1) return;
+  const m = $('main');
+  if (Math.abs(m.scrollTop - placed) < 1) return;
   placed = -1;
+  userScrollAt = performance.now();
+  if (!feedShown()) return;
   const g = gapNow();
   gap = g < 2 ? 0 : g;
 }, { passive: true });
-const bottomKeeper = new ResizeObserver(() => { if (feedShown()) keepGap(); });
+// Work that would move the list (re-rendering the feed) waits until the owner's scroll has come to rest.
+let idleWaiters = [], idleTimer = 0;
+function whenIdle(fn) {
+  if (!busy()) return fn();
+  if (!idleWaiters.includes(fn)) idleWaiters.push(fn);
+  if (idleTimer) return;
+  const check = () => {
+    if (busy()) { idleTimer = setTimeout(check, 120); return; }
+    idleTimer = 0;
+    const fns = idleWaiters; idleWaiters = [];
+    for (const f of fns) f();
+  };
+  idleTimer = setTimeout(check, 120);
+}
+// Pinned: the dock or list changing height keeps the newest row on the bottom edge. Scrolled up: leave it alone.
+const repin = () => { if (feedShown() && shouldRepin(gap, busy())) keepGap(); };
+const bottomKeeper = new ResizeObserver(() => { if (feedShown() && gap === 0) whenIdle(repin); });
 bottomKeeper.observe($('main'));
 bottomKeeper.observe($('feed-groups'));
 // Switching between narrow and wide re-lays the lists in that width's order.
@@ -325,16 +367,32 @@ function sheetRow(label, onclick, cls = '') {
 }
 
 // ------------------------------------------------------------------ feed filter (remembered on this device only)
+// The search words (0.4.1) live only while the app is open; show, state and order are remembered.
 const FILTER_KEY = 'wizard-podcasts.feed-filter';
+const STATES = ['all', 'unplayed', 'started', 'played', 'skipped'];
 const filter = (() => {
   try {
     const f = JSON.parse(localStorage.getItem(FILTER_KEY) || '{}');
-    return { show: Number.isInteger(f.show) ? f.show : null, state: ['started', 'played', 'skipped'].includes(f.state) ? f.state : 'unplayed', sort: f.sort === 'oldest' ? 'oldest' : 'newest' };
-  } catch (_) { return { show: null, state: 'unplayed', sort: 'newest' }; }
+    return { show: Number.isInteger(f.show) ? f.show : null, state: STATES.includes(f.state) ? f.state : 'unplayed', sort: f.sort === 'oldest' ? 'oldest' : 'newest', q: '' };
+  } catch (_) { return { show: null, state: 'unplayed', sort: 'newest', q: '' }; }
 })();
+// Searching looks through every episode: Unplayed turns into All while words are in the box and comes back when the
+// search is cleared (the sheet shows the switch).
+let stateBeforeSearch = null;
 try { localStorage.removeItem('wizard-podcasts.upnext-filter'); } catch (_) {}  // the 0.2 filter, retired
-function saveFilter() { try { localStorage.setItem(FILTER_KEY, JSON.stringify(filter)); } catch (_) {} }
+function saveFilter() {
+  const keep = { show: filter.show, state: stateBeforeSearch || filter.state, sort: filter.sort };
+  try { localStorage.setItem(FILTER_KEY, JSON.stringify(keep)); } catch (_) {}
+}
 function setFilter(change) {
+  if ('q' in change) {
+    const q = change.q.replace(/\s+/g, ' ').trim();
+    change.q = q;
+    if (q && !filter.q && filter.state === 'unplayed' && !('state' in change)) { stateBeforeSearch = 'unplayed'; change.state = 'all'; }
+    if (!q && filter.q && stateBeforeSearch && !('state' in change)) change.state = stateBeforeSearch;
+    if (!q) stateBeforeSearch = null;
+  }
+  if ('state' in change && !('q' in change)) stateBeforeSearch = null;  // his own pick wins
   Object.assign(filter, change);
   saveFilter();
   if (thumb) gap = 0; else $('main').scrollTop = 0;
@@ -345,10 +403,11 @@ function feedPath(offset = 0) {
   if (filter.show != null) qs.set('show_id', filter.show);
   if (filter.state !== 'unplayed') qs.set('state', filter.state);
   if (filter.sort === 'oldest') qs.set('sort', 'oldest');
+  if (filter.q) qs.set('q', filter.q);
   if (offset) qs.set('offset', String(offset));
   return 'api/feed?' + qs;
 }
-// Filters: one show (or all), state and order. Picks apply at once and the sheet stays open to combine them.
+// Filters: search, one show (or all), state and order. Picks apply at once and the sheet stays open to combine them.
 function filterChip(show) {
   const b = el('button', 'pc-chip' + (show ? '' : ' pc-chip-all'));
   b.type = 'button';
@@ -364,6 +423,26 @@ function filterChip(show) {
   b.onclick = () => { setFilter({ show: show ? show.id : null }); openFilters(); };
   return b;
 }
+let stateSeg = null;
+function searchField() {
+  const form = el('form', 'pc-qform');
+  form.setAttribute('role', 'search');
+  form.autocomplete = 'off';
+  const input = el('input', 'wz-field pc-qinput');
+  Object.assign(input, { type: 'search', id: 'feed-q', placeholder: 'Search episodes', value: filter.q, maxLength: 200, enterKeyHint: 'search' });
+  input.setAttribute('aria-label', 'Search episodes');
+  input.inputMode = 'search';
+  let t = 0;
+  input.addEventListener('input', () => {
+    clearTimeout(t);
+    t = setTimeout(() => { if (input.value.trim() !== filter.q) { setFilter({ q: input.value }); paintStateSeg(); } }, 250);
+  });
+  // Enter: search now and show the results (the keyboard and the sheet go away).
+  form.onsubmit = e => { e.preventDefault(); clearTimeout(t); if (input.value.trim() !== filter.q) setFilter({ q: input.value }); input.blur(); closeSheet(); };
+  form.append(input);
+  return form;
+}
+function paintStateSeg() { if (stateSeg) for (const b of stateSeg.children) b.setAttribute('aria-pressed', String(b.dataset.v === filter.state)); }
 function openFilters() {
   if (currentView() !== 'feed') return;
   const keep = $('sheet-body').querySelector('.pc-showgrid')?.scrollTop || 0;
@@ -372,29 +451,36 @@ function openFilters() {
   grid.append(filterChip(null), ...state.shows.map(filterChip));
   // 'Newest' means newest where the eye starts: on top in a wide window, at the bottom (by the thumb) on a phone.
   const order = thumb ? [['newest', 'Newest at bottom'], ['oldest', 'Oldest at bottom']] : [['newest', 'Newest first'], ['oldest', 'Oldest first']];
-  const rows = [grid,
-    seg([['unplayed', 'Unplayed'], ['started', 'Started'], ['played', 'Played'], ['skipped', 'Skipped']], filter.state, v => setFilter({ state: v })),
-    seg(order, filter.sort, v => setFilter({ sort: v }))];
+  stateSeg = seg([['all', 'All'], ['unplayed', 'Unplayed'], ['started', 'Started'], ['played', 'Played'], ['skipped', 'Skipped']], filter.state, v => setFilter({ state: v }));
+  stateSeg.classList.add('pc-seg-state');
+  const rows = [searchField(), grid, stateSeg, seg(order, filter.sort, v => setFilter({ sort: v }))];
   // With one show chosen: clear everything it has waiting in one go (Undo in the toast).
   const show = filter.show != null && state.shows.find(s => s.id === filter.show);
   if (show && show.unplayed > 0) rows.push(sheetRow('Skip all from ' + (show.short_title || show.title), () => { closeSheet(); skipAll(show); }));
+  const typing = document.activeElement?.id === 'feed-q';
   sheet('Filters', ...rows);
+  if (typing) $('sheet-body').querySelector('.pc-qinput')?.focus();
   grid.scrollTop = keep;
   if (!keep) grid.querySelector('[aria-pressed="true"]')?.scrollIntoView({ block: 'nearest' });
 }
 $('nav-filter').onclick = openFilters;
-// The filter in force, visible without opening the sheet: a dot on Filters, and the chosen show as one pill
-// (tap clears it).
+// The filter in force, visible without opening the sheet: a dot on Filters, and the chosen show and the search words
+// as pills (one tap clears each).
 function paintFilterState() {
-  $('filter-dot').hidden = filter.show == null && filter.state === 'unplayed' && filter.sort === 'newest';
+  $('filter-dot').hidden = filter.show == null && filter.state === 'unplayed' && filter.sort === 'newest' && !filter.q;
   const show = filter.show != null && state.shows.find(s => s.id === filter.show);
-  $('pillbar').hidden = !show || currentView() !== 'feed';
+  const onFeed = currentView() === 'feed';
+  $('filter-pill').hidden = !show;
+  $('q-pill').hidden = !filter.q;
+  $('pillbar').hidden = !onFeed || (!show && !filter.q);
+  if (filter.q) { $('q-pill-text').textContent = filter.q; $('q-pill').setAttribute('aria-label', 'Search: ' + filter.q + '. Clear search'); }
   if (!show) return;
   $('pill-name').textContent = show.short_title || show.title;
   art($('pill-art'), show.artwork);
   $('filter-pill').setAttribute('aria-label', 'Showing only ' + show.title + '. Show all');
 }
 $('filter-pill').onclick = () => setFilter({ show: null });
+$('q-pill').onclick = () => setFilter({ q: '' });
 
 // One show's actions (the show page's ⋯): skip all, auto-download, unfollow (second tap confirms).
 function showSheet(show) {
@@ -464,23 +550,26 @@ function removeRow(li, id) {
   requestAnimationFrame(() => { li.classList.add('pc-gone'); li.style.height = '0px'; });
   setTimeout(drop, 220);
 }
-// Phone: swipe a feed row left to skip it. Edges stay with the shell's own gestures; vertical moves scroll.
+// Phone: swipe a feed row left to skip it. Edges stay with the shell's own gestures; vertical moves scroll. The row
+// only takes the gesture once it is clearly horizontal (swipeIntent), never while the list is still flinging, and
+// gives it up for good as soon as it looks vertical, so a slightly diagonal scroll never drags a row sideways.
 const EDGE = 28;
 function resetSwipe(li) { li.classList.remove('pc-swiping', 'pc-armed'); li.style.removeProperty('--dx'); }
 function swipeable(li, onSkip) {
-  let id = null, x0 = 0, y0 = 0, dx = 0, mode = '';
+  let id = null, x0 = 0, y0 = 0, dx = 0, mode = '', top0 = 0;
   li.addEventListener('pointerdown', e => {
-    if (e.pointerType !== 'touch' || id !== null) return;
+    if (e.pointerType !== 'touch' || id !== null || busy()) return;
     if (e.clientX < EDGE || e.clientX > document.documentElement.clientWidth - EDGE) return;
-    id = e.pointerId; x0 = e.clientX; y0 = e.clientY; dx = 0; mode = '';
+    id = e.pointerId; x0 = e.clientX; y0 = e.clientY; dx = 0; mode = ''; top0 = $('main').scrollTop;
   });
   li.addEventListener('pointermove', e => {
     if (e.pointerId !== id) return;
     const mx = e.clientX - x0, my = e.clientY - y0;
     if (!mode) {
-      if (mx < -12 && Math.abs(mx) > Math.abs(my) * 1.6) { mode = 'swipe'; li.classList.add('pc-swiping'); try { li.setPointerCapture(id); } catch (_) {} }
-      else if (Math.abs(my) > 10 || mx > 12) { id = null; return; }
-      else return;
+      const intent = Math.abs($('main').scrollTop - top0) > 1 ? 'scroll' : swipeIntent(mx, my);
+      if (intent === 'scroll') { id = null; return; }
+      if (!intent) return;
+      mode = 'swipe'; li.classList.add('pc-swiping'); try { li.setPointerCapture(id); } catch (_) {}
     }
     dx = Math.min(0, mx);
     li.style.setProperty('--dx', dx + 'px');
@@ -583,11 +672,15 @@ async function loadFeed(append = false) {
   state.shows = data.shows || [];
   // A remembered show that is no longer followed falls back to All.
   if (filter.show != null && !state.shows.some(s => s.id === filter.show)) { filter.show = null; saveFilter(); return loadFeed(); }
-  state.feed = append ? state.feed.concat(data.episodes) : data.episodes;
-  state.feedTotal = data.total;
-  paintFilterState();
-  renderFeed();
-  if (data.now_playing && !state.current) loadIntoPlayer(data.now_playing, false);
+  // New rows never land under a moving finger: the re-render waits for the owner's scroll to come to rest.
+  whenIdle(() => {
+    if (seq !== feedSeq) return;
+    state.feed = append ? state.feed.concat(data.episodes) : data.episodes;
+    state.feedTotal = data.total;
+    paintFilterState();
+    renderFeed();
+    if (data.now_playing && !state.current && !miniClosed(data.now_playing)) loadIntoPlayer(data.now_playing, false);
+  });
 }
 $('feed-more').onclick = () => loadFeed(true).catch(e => say(e.message, 'error'));
 
@@ -682,6 +775,8 @@ function renderFeed() {
   if (!state.shows.length) {
     $('feed-empty-text').textContent = 'Follow a show to see its episodes here.';
     go.hidden = false; go.textContent = 'Discover shows'; go.onclick = () => setTab('discover');
+  } else if (filter.q) {
+    $('feed-empty-text').textContent = 'Nothing found.';
   } else if (filter.show != null) {
     $('feed-empty-text').textContent = filter.state === 'played' ? 'Nothing played yet.' : filter.state === 'started' ? 'Nothing started.' : filter.state === 'skipped' ? 'Nothing skipped.' : 'Nothing new.';
     go.hidden = false; go.textContent = 'All episodes'; go.onclick = () => openView('show', filter.show);
@@ -927,6 +1022,7 @@ function loadIntoPlayer(ep, autoplay) {
   }
 }
 function playEpisode(ep) {
+  try { localStorage.removeItem(MINI_KEY); } catch (_) {}
   if (state.current && state.current.id !== ep.id) saveProgress(true);  // reads the old place synchronously
   // Start inside the tap (mobile browsers need it), then catch up with a newer place saved on another device.
   loadIntoPlayer(ep, true);
@@ -941,7 +1037,7 @@ function togglePlay() {
   if (!state.current) return;
   if (audio.paused) {
     // Start inside the tap (mobile browsers need it), then catch up with a newer place saved on another device.
-    const p = audio.play(); if (p) p.catch(e => say('Could not start playback: ' + e.message, 'error'));
+    const p = audio.play(); if (p) p.catch(e => { if (e.name !== 'AbortError') say('Could not start playback: ' + e.message, 'error'); });
     syncFromServer();
   } else audio.pause();
 }
@@ -957,6 +1053,26 @@ async function syncFromServer() {
       toast('Picked up where you left off · ' + clock(e.position));
     }
   } catch (_) {}
+}
+// Close (X or swipe down): pause, save the place, hide the bar. The episode stays in the feed as started; the bar stays
+// closed on this device until something is played (or another device moves that episode's place on).
+const MINI_KEY = 'wizard-podcasts.mini-closed';
+function miniClosed(np) {
+  try {
+    const c = JSON.parse(localStorage.getItem(MINI_KEY) || 'null');
+    return !!c && c.id === np.id && (np.position_at || 0) <= c.at;
+  } catch (_) { return false; }
+}
+async function closePlayer() {
+  const ep = state.current;
+  if (!ep) return;
+  const save = saveProgress(true);  // reads the place synchronously, before the audio is unloaded
+  audio.pause();
+  unloadPlayer();
+  await save;
+  const at = Number.isFinite(state.savedAt) && state.savedAt > 0 ? state.savedAt : ep.position_at || 0;
+  try { localStorage.setItem(MINI_KEY, JSON.stringify({ id: ep.id, at: Math.max(at, ep.position_at || 0) })); } catch (_) {}
+  if (currentView() === 'feed') loadFeed().catch(() => {});
 }
 function unloadPlayer() {
   audio.pause();
@@ -978,18 +1094,23 @@ function paintPlayer() {
   const pos = audio.readyState ? audio.currentTime : state.pendingSeek || ep.position || 0;
   const dur = duration();
   const playing = !audio.paused;
-  $('mini-title').textContent = ep.title;
-  $('mini-sub').textContent = showName(ep.show_id, ep.show_title) + (dur ? ' · ' + minutes(dur - pos) + ' left' : '');
+  setText($('mini-title'), ep.title);
+  setText($('mini-show'), showName(ep.show_id, ep.show_title));
+  const left = dur ? minutes(dur - pos) + ' left' : '';
+  setText($('mini-left'), left ? ' · ' + left : '');
+  setText($('mini-time'), left);
   art($('mini-art'), ep.artwork);
   $('mini-progress').style.width = dur ? Math.min(100, 100 * pos / dur) + '%' : '0';
-  $('mini-toggle').replaceChildren(icon(playing ? 'pause' : 'play'));
+  // The play/pause icon is swapped only when the state changes: replacing it on every timeupdate (4x a second) pulled
+  // the node out from under a finger mid-tap, so the tap was lost (0.4.0).
+  setIcon($('mini-toggle'), playing ? 'pause' : 'play');
   $('mini-toggle').setAttribute('aria-label', playing ? 'Pause' : 'Play');
   if (currentView() === 'player') {
     art($('pl-art'), ep.artwork);
     $('pl-title').textContent = ep.title;
     $('pl-show').textContent = ep.show_title || '';
     $('pl-date').textContent = [postedFull(ep.published), ep.duration ? minutes(ep.duration) : ''].filter(Boolean).join(' · ');
-    $('pl-toggle').replaceChildren(icon(playing ? 'pause' : 'play'));
+    setIcon($('pl-toggle'), playing ? 'pause' : 'play');
     $('pl-toggle').setAttribute('aria-label', playing ? 'Pause' : 'Play');
     const seek = $('pl-seek');
     if (!seek.matches(':active')) { seek.max = String(Math.max(1, Math.floor(dur))); seek.value = String(Math.floor(pos)); }
@@ -999,6 +1120,8 @@ function paintPlayer() {
     $('pl-fwd').querySelector('span').textContent = '+' + state.settings.skip_forward;
   }
 }
+function setText(n, t) { if (n.textContent !== t) n.textContent = t; }
+function setIcon(btn, name) { if (btn.dataset.icon === name) return; btn.dataset.icon = name; btn.replaceChildren(icon(name)); }
 function renderPlayer() {
   if (!state.current) { popView(); return; }
   renderSpeeds();
@@ -1074,8 +1197,46 @@ audio.addEventListener('error', () => {
   if (state.current && audio.getAttribute('src')) say('This episode could not be played. Try downloading it first.', 'error');
 });
 
-$('mini-open').onclick = () => openView('player');
-$('mini-toggle').onclick = togglePlay;
+// Mini player: the bar opens the full player; play/pause and close are their own 44px+ targets and never open it.
+// Swipe down (touch) closes it like the X.
+const mini = $('mini');
+mini.addEventListener('click', e => {
+  if (mini.__dragged) return;
+  if (e.target.closest('#mini-toggle, #mini-close')) return;
+  openView('player');
+});
+$('mini-toggle').addEventListener('click', e => { e.stopPropagation(); if (!mini.__dragged) togglePlay(); });
+$('mini-close').addEventListener('click', e => { e.stopPropagation(); if (!mini.__dragged) closePlayer(); });
+(() => {
+  let id = null, x0 = 0, y0 = 0, dy = 0, mode = '';
+  const reset = () => { mini.classList.remove('pc-mini-drag'); mini.style.removeProperty('--mdy'); };
+  mini.addEventListener('pointerdown', e => {
+    if (e.pointerType !== 'touch' || id !== null) return;
+    id = e.pointerId; x0 = e.clientX; y0 = e.clientY; dy = 0; mode = '';
+  });
+  mini.addEventListener('pointermove', e => {
+    if (e.pointerId !== id) return;
+    const mx = e.clientX - x0, my = e.clientY - y0;
+    if (!mode) {
+      const intent = miniDragIntent(mx, my);
+      if (intent === 'none') { id = null; return; }
+      if (!intent) return;
+      mode = 'drag'; mini.classList.add('pc-mini-drag'); try { mini.setPointerCapture(id); } catch (_) {}
+    }
+    dy = Math.max(0, my);
+    mini.style.setProperty('--mdy', dy + 'px');
+  });
+  const end = e => {
+    if (e.pointerId !== id) return;
+    id = null;
+    if (mode !== 'drag') return;
+    mini.__dragged = true; setTimeout(() => { mini.__dragged = false; }, 350);
+    if (e.type === 'pointerup' && dy > Math.min(48, mini.offsetHeight * 0.6)) { closePlayer(); setTimeout(reset, 50); }
+    else reset();
+  };
+  mini.addEventListener('pointerup', end);
+  mini.addEventListener('pointercancel', end);
+})();
 $('pl-toggle').onclick = togglePlay;
 $('pl-back').onclick = () => skip(-state.settings.skip_back);
 $('pl-fwd').onclick = () => skip(state.settings.skip_forward);
@@ -1099,7 +1260,7 @@ $('pl-mark').onclick = async () => {
 if (!W) {
   say('Wizard system functions are unavailable. Open Podcasts through Wizard.', 'error');
 } else {
-  W.ready({ name: 'wizard-podcasts', version: '0.4.0' });
+  W.ready({ name: 'wizard-podcasts', version: '0.4.1' });
   // Domain Back: close the page on top (show, episode, player), then Discover -> My feed; at My feed the core decides.
   W.back.register({ canGoBack: () => state.stack.length > 0 || state.tab !== 'feed', back: () => popView() });
 }
