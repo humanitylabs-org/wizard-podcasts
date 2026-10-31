@@ -61,6 +61,7 @@ TZ_COUNTRY = {
     'America/Halifax': 'ca', 'America/Mexico_City': 'mx', 'America/Sao_Paulo': 'br', 'America/Argentina/Buenos_Aires': 'ar',
     'America/Buenos_Aires': 'ar', 'America/Santiago': 'cl', 'America/Bogota': 'co', 'America/Lima': 'pe'}
 REGION_KEY = 'region'
+FOLLOW_REBUILD_S = int(os.environ.get('PODCASTS_DISCOVER_FOLLOW_DELAY', '90'))
 ITUNES_GAP = float(os.environ.get('PODCASTS_ITUNES_GAP', '2.5'))  # seconds between iTunes API calls (~20/min allowed)
 STALE_DAYS = 180       # a show with nothing new in half a year is not recommended
 FOR_YOU_SHARE = 7      # of every 10 cards: 7 'for you', 3 popular/new
@@ -728,6 +729,8 @@ def build(force=False):
         pool['shows'] = dedupe(pool['shows'])
         pool['built_at'] = now()
         pool['retry_at'] = now() + 3600 if missing else 0  # a source that failed is tried again within the hour
+        if _state.pop('again', False):  # a follow arrived while this build ran: one more pass soon
+            pool['retry_at'] = now() + FOLLOW_REBUILD_S
         pool['v'] = POOL_V
         save_pool(pool)
         return pool
@@ -761,6 +764,29 @@ def note_timezone(tz):
             save_pool(dict(pool, retry_at=now()))
         wake.set()
     return True
+
+
+def note_follow(result):
+    """A new follow: rebuild Discover in a minute or two (several follows in a row share one rebuild; cached sources
+    keep it cheap), so 'Like <show>' cards appear the same day instead of after the 12 h refresh."""
+    if not isinstance(result, dict) or result.get('already_subscribed'):
+        return False
+    if _state['building']:
+        _state['again'] = True
+    pool = load_pool()
+    if not pool.get('built_at'):
+        return False
+    at = now() + FOLLOW_REBUILD_S
+    if not pool.get('retry_at') or pool['retry_at'] > at:
+        save_pool(dict(pool, retry_at=at))
+    wake.set()
+    return True
+
+
+def _next_wait(pool):
+    """Seconds until the background loop looks again: the pending retry when it is sooner than an hour."""
+    r = pool.get('retry_at') or 0
+    return 3600 if not r else max(5, min(3600, r - now()))
 
 
 def due(pool):
@@ -1057,8 +1083,12 @@ def _loop():
                 build()
         except Exception:
             pass
-        wake.wait(3600)
         wake.clear()
+        try:
+            wait = _next_wait(load_pool())
+        except Exception:
+            wait = 3600
+        wake.wait(wait)
 
 
 _started = False

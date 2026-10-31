@@ -20,7 +20,7 @@ from podcasts import Problem  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 APP_ID = 'wizard-podcasts'
-VERSION = '0.5.3'
+VERSION = '0.5.4'
 PORT = int(os.environ.get('PORT', '9207'))
 PREFIX = '/' + APP_ID
 STATIC_TYPES = {'.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8',
@@ -101,7 +101,9 @@ def call_tool(name, a):
         ad = a.get('auto_download')
         if ad is not None and not isinstance(ad, bool):
             raise Problem(400, 'auto_download must be true or false.')
-        return P.subscribe(a.get('feed_url') or a.get('url'), ad)
+        r = P.subscribe(a.get('feed_url') or a.get('url'), ad)
+        D.note_follow(r)
+        return r
     if name == 'podcasts_list':
         view = a.get('view') or ('feed' if a.get('q') else 'episodes' if a.get('show_id') is not None else 'shows')
         if view == 'inbox':
@@ -425,7 +427,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send(400, {'error': 'Expected a JSON object.'})
             if path == '/api/subscribe':
                 ad = body.get('auto_download')
-                return self.send(200, P.subscribe(body.get('url') or body.get('feed_url'), ad if isinstance(ad, bool) else None))
+                r = P.subscribe(body.get('url') or body.get('feed_url'), ad if isinstance(ad, bool) else None)
+                D.note_follow(r)
+                return self.send(200, r)
             if path == '/api/shows/taste':
                 return self.send(200, D.set_taste(body.get('feed_url'), body.get('show_id'), body.get('value')))
             if path == '/api/refresh':
