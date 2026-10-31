@@ -19,7 +19,7 @@ from podcasts import Problem  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 APP_ID = 'wizard-podcasts'
-VERSION = '0.3.0'
+VERSION = '0.3.1'
 PORT = int(os.environ.get('PORT', '9207'))
 PREFIX = '/' + APP_ID
 STATIC_TYPES = {'.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8',
@@ -78,9 +78,10 @@ TOOLS = [
                                                       'since': {'type': 'integer', 'minimum': 0, 'description': 'view=inbox only; unix seconds, only episodes published at or after it'}}}},
     {'name': 'podcasts_episode', 'description': 'One episode in full: show notes (sanitized html and plain text), publish date, duration, saved position, played flag, download state, file (path relative to the Podcasts app data folder when downloaded), enclosure_url, and a transcript field (not available yet; v2 will use the Transcriber app).',
      'inputSchema': {'type': 'object', 'properties': {'episode_id': {'type': 'integer'}}, 'required': ['episode_id']}},
-    {'name': 'podcasts_mark', 'description': 'Mark an episode played (leaves Up next, position cleared) or unplayed (played=false; position reset). Optional in_inbox puts it back in or removes it from Up next. Idempotent; returns the episode for readback.',
+    {'name': 'podcasts_mark', 'description': "Mark an episode played (leaves Up next, position cleared) or unplayed (played=false; position reset), and/or skipped (skipped=true: dismissed from the owner's feed and Up next without being played, its unstarted download is removed; skipped=false brings it back). Send played, skipped or both. Optional in_inbox puts it back in or removes it from Up next. Idempotent; returns the episode (with 'skipped') for readback.",
      'inputSchema': {'type': 'object', 'properties': {'episode_id': {'type': 'integer'}, 'played': {'type': 'boolean'},
-                                                      'in_inbox': {'type': 'boolean'}}, 'required': ['episode_id', 'played']}},
+                                                      'skipped': {'type': 'boolean'},
+                                                      'in_inbox': {'type': 'boolean'}}, 'required': ['episode_id']}},
 ]
 
 
@@ -106,10 +107,15 @@ def call_tool(name, a):
     if name == 'podcasts_episode':
         return P.episode(_int(a.get('episode_id'), 'episode_id'))
     if name == 'podcasts_mark':
-        if not isinstance(a.get('played'), bool):
+        played, skipped = a.get('played'), a.get('skipped')
+        if played is not None and not isinstance(played, bool):
             raise Problem(400, 'played must be true or false.')
+        if skipped is not None and not isinstance(skipped, bool):
+            raise Problem(400, 'skipped must be true or false.')
+        if played is None and skipped is None:
+            raise Problem(400, 'Send played and/or skipped (true or false).')
         ib = a.get('in_inbox')
-        return P.mark(_int(a.get('episode_id'), 'episode_id'), a['played'], ib if isinstance(ib, bool) else None)
+        return P.mark(_int(a.get('episode_id'), 'episode_id'), played, ib if isinstance(ib, bool) else None, skipped)
     return None
 
 
@@ -144,8 +150,8 @@ def rpc(msg):
 # ------------------------------------------------------------------ HTTP
 
 RANGE = re.compile(r'^bytes=(\d*)-(\d*)$')
-EP_ROUTE = re.compile(r'^/api/episodes/(\d+)(?:/(audio|progress|mark|download|delete-download))?$')
-SHOW_ROUTE = re.compile(r'^/api/shows/(\d+)(?:/(art|refresh|unsubscribe))?$')
+EP_ROUTE = re.compile(r'^/api/episodes/(\d+)(?:/(audio|progress|mark|skip|download|delete-download))?$')
+SHOW_ROUTE = re.compile(r'^/api/shows/(\d+)(?:/(art|refresh|unsubscribe|skip-all))?$')
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -409,6 +415,9 @@ class Handler(BaseHTTPRequestHandler):
                     return self.send(200, P.refresh_show(sid))
                 if action == 'unsubscribe':
                     return self.send(200, P.unsubscribe(sid))
+                if action == 'skip-all':
+                    sk = body.get('skipped', True)
+                    return self.send(200, P.skip_all(sid, sk, body.get('episode_ids')))
                 if action is None:
                     return self.send(200, P.update_show(sid, body))
             m = EP_ROUTE.match(path)
@@ -418,7 +427,10 @@ class Handler(BaseHTTPRequestHandler):
                     return self.send(200, P.set_progress(eid, body))
                 if action == 'mark':
                     ib = body.get('in_inbox')
-                    return self.send(200, P.mark(eid, body.get('played'), ib if isinstance(ib, bool) else None))
+                    sk = body.get('skipped')
+                    return self.send(200, P.mark(eid, body.get('played'), ib if isinstance(ib, bool) else None, sk))
+                if action == 'skip':
+                    return self.send(200, P.skip(eid, body.get('skipped', True)))
                 if action == 'download':
                     return self.send(200, P.queue_download(eid))
                 if action == 'delete-download':

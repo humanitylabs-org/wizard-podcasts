@@ -36,6 +36,9 @@ MAX_ART_BYTES = 5 * MB
 MAX_OPML_BYTES = 2 * MB
 MAX_EPISODE_BYTES = int(os.environ.get('PODCASTS_MAX_EPISODE_MB', '1024')) * MB
 DISK_RESERVE_BYTES = int(os.environ.get('PODCASTS_DISK_RESERVE_MB', '512')) * MB
+# A skipped episode's finished download is kept this long so Undo is instant; then it is deleted to free space.
+YOUTUBE_RETRY_SECONDS = 1.0
+SKIP_GRACE_SECONDS = int(os.environ.get('PODCASTS_SKIP_GRACE_SECONDS', '180'))
 SEARCH_URL = 'https://itunes.apple.com/search'
 DEFAULTS = {
     'storage_cap_mb': 2048,     # all downloads together
@@ -95,6 +98,12 @@ CREATE INDEX IF NOT EXISTS episodes_show ON episodes(show_id, published DESC);
 CREATE INDEX IF NOT EXISTS episodes_download ON episodes(download, queued_at);
 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 """
+# Columns added after 0.3.0, applied to existing databases in place (never a rebuild).
+MIGRATIONS = [
+    ('episodes', 'skipped', 'INTEGER NOT NULL DEFAULT 0'),        # 0.3.1: hidden from the feed, not played
+    ('episodes', 'skipped_at', 'INTEGER NOT NULL DEFAULT 0'),
+    ('episodes', 'skip_download', "TEXT NOT NULL DEFAULT ''"),    # download state before the skip, for Undo
+]
 
 
 def connect():
@@ -113,6 +122,9 @@ def init():
     c = connect()
     try:
         c.executescript(SCHEMA)
+        for table, col, decl in MIGRATIONS:
+            if col not in {r['name'] for r in c.execute(f'PRAGMA table_info({table})')}:
+                c.execute(f'ALTER TABLE {table} ADD COLUMN {col} {decl}')
         # A download that was running when the app stopped resumes from the queue.
         c.execute("UPDATE episodes SET download='queued', progress=0 WHERE download='downloading'")
         c.commit()
@@ -203,7 +215,7 @@ def episode_dict(r, detail=False):
     d = {'id': r['id'], 'show_id': r['show_id'], 'show_title': r['show_title'] if 'show_title' in r.keys() else None,
          'title': r['title'], 'published': r['published'], 'duration': r['duration'],
          'position': round(r['position'], 1), 'position_at': r['position_at'], 'played': bool(r['played']),
-         'in_inbox': bool(r['inbox']),
+         'in_inbox': bool(r['inbox']), 'skipped': bool(r['skipped']),
          'download': {'state': r['download'] or 'none', 'progress_bytes': r['progress'], 'size_bytes': r['file_size'] or r['length'],
                       'error': r['download_error'] or None},
          'file': r['file'] or None, 'audio': f'api/episodes/{r["id"]}/audio',
@@ -348,19 +360,23 @@ def _subscribe_youtube(text):
     already = _existing(long_form, every)
     if already:
         return already, None, None, None
-    url = long_form
-    try:
-        parsed, r = _fetch_feed(url)
-    except FetchError as e:
-        if '404' not in str(e):
-            raise Problem(422, str(e)) from None
-        url = every  # no long-form uploads list: the channel feed, with Shorts skipped by the parser
+    # YouTube's feed endpoints answer 404/500 intermittently: retry each once; with no long-form uploads list, the
+    # channel feed is used (the parser skips Shorts).
+    parsed = r = None
+    last = None
+    for url in (long_form, long_form, every, every):
         try:
             parsed, r = _fetch_feed(url)
-        except (FetchError, feeds.FeedError) as e2:
-            raise Problem(422, str(e2)) from None
-    except feeds.FeedError as e:
-        raise Problem(422, str(e)) from None
+            break
+        except FetchError as e:
+            last = e
+            if not re.search(r'\b(404|5\d\d)\b', str(e)):
+                raise Problem(422, str(e)) from None
+            time.sleep(YOUTUBE_RETRY_SECONDS)
+        except feeds.FeedError as e:
+            raise Problem(422, str(e)) from None
+    else:
+        raise Problem(422, str(last)) from None
     if parsed is not None:
         parsed['title'] = info['title'] or parsed['title']
         parsed['author'] = parsed['author'] or info['title']
@@ -567,10 +583,10 @@ def export_opml():
 # ------------------------------------------------------------------ reading
 
 def _counts(sid):
-    r = q("SELECT COUNT(*) n, SUM(played=0) unplayed, SUM(inbox=1 AND played=0) new, SUM(download='done') downloaded, MAX(published) latest "
-          'FROM episodes WHERE show_id=?', (sid,), one=True)
+    r = q("SELECT COUNT(*) n, SUM(played=0) unplayed, SUM(inbox=1 AND played=0 AND skipped=0) new, SUM(download='done') downloaded, "
+          'SUM(skipped=1 AND played=0) skipped, MAX(published) latest FROM episodes WHERE show_id=?', (sid,), one=True)
     return {'episodes': r['n'] or 0, 'unplayed': r['unplayed'] or 0, 'new': r['new'] or 0,
-            'downloaded': r['downloaded'] or 0, 'latest': r['latest'] or 0}
+            'downloaded': r['downloaded'] or 0, 'skipped': r['skipped'] or 0, 'latest': r['latest'] or 0}
 
 
 def list_shows():
@@ -641,9 +657,9 @@ def inbox(limit=100, show_id=None, kind=None, state=None, sort=None, since=None)
         show_id = None
     kind, state = kind or None, state or None
     limit = max(1, min(int(limit), 500))
-    cont = q(EP_SELECT + 'WHERE e.position>0 AND e.played=0 ORDER BY e.position_at DESC LIMIT 20')
+    cont = q(EP_SELECT + 'WHERE e.position>0 AND e.played=0 AND e.skipped=0 ORDER BY e.position_at DESC LIMIT 20')
     seen = {r['id'] for r in cont}
-    new = [r for r in q(EP_SELECT + 'WHERE e.inbox=1 AND e.played=0 ORDER BY e.published DESC, e.id DESC') if r['id'] not in seen]
+    new = [r for r in q(EP_SELECT + 'WHERE e.inbox=1 AND e.played=0 AND e.skipped=0 ORDER BY e.published DESC, e.id DESC') if r['id'] not in seen]
     shows = {r['id']: r for r in q('SELECT id, title, feed_url, art_file FROM shows')}
     kinds = {sid: _show_kind(r['feed_url']) for sid, r in shows.items()}
     # facets over everything in Up next, before filtering
@@ -685,19 +701,20 @@ def inbox(limit=100, show_id=None, kind=None, state=None, sort=None, since=None)
             'filters': filters}
 
 
-FEED_STATES = ('unplayed', 'started', 'played')
-_FEED_WHERE = {'unplayed': '(e.inbox=1 OR e.position>0) AND e.played=0',
-               'started': 'e.position>0 AND e.played=0',
-               'played': 'e.played=1'}
+FEED_STATES = ('unplayed', 'started', 'played', 'skipped')
+_FEED_WHERE = {'unplayed': '(e.inbox=1 OR e.position>0) AND e.played=0 AND e.skipped=0',
+               'started': 'e.position>0 AND e.played=0 AND e.skipped=0',
+               'played': 'e.played=1',
+               'skipped': 'e.skipped=1 AND e.played=0'}
 
 
 def feed(show_id=None, state=None, sort=None, limit=100, offset=0):
     """The screen's one list (0.3): episodes from followed shows in publish order, started ones included in place.
-    state 'unplayed' (default: new + started, not finished), 'started' or 'played'; optional show_id; sort 'newest'
+    state 'unplayed' (default: new + started, not finished, not skipped), 'started', 'played' or 'skipped'; optional show_id; sort 'newest'
     (default) | 'oldest'; paged with limit/offset. 'shows' lists every followed show, newest episode first."""
     state = state or 'unplayed'
     if state not in FEED_STATES:
-        raise Problem(400, "state must be 'unplayed', 'started' or 'played'.")
+        raise Problem(400, "state must be 'unplayed', 'started', 'played' or 'skipped'.")
     sort = sort or 'newest'
     if sort not in INBOX_SORTS:
         raise Problem(400, "sort must be 'newest' or 'oldest'.")
@@ -762,28 +779,109 @@ def set_progress(eid, args):
         if isinstance(dur, (int, float)) and not isinstance(dur, bool) and 0 < dur < 200000:
             c.execute('UPDATE episodes SET duration=? WHERE id=? AND (duration=0 OR ABS(duration-?)>5)', (int(dur), eid, dur))
         if completed:
-            c.execute('UPDATE episodes SET played=1, played_at=?, inbox=0, position=0, position_at=? WHERE id=?', (t, t, eid))
+            c.execute('UPDATE episodes SET played=1, played_at=?, inbox=0, position=0, position_at=?, skipped=0 WHERE id=?', (t, t, eid))
         else:
-            c.execute('UPDATE episodes SET position=?, position_at=? WHERE id=?', (float(pos), t, eid))
+            # Listening to a skipped episode is choosing it after all: it returns to the feed.
+            c.execute('UPDATE episodes SET position=?, position_at=?, skipped=CASE WHEN ?>0 THEN 0 ELSE skipped END WHERE id=?',
+                      (float(pos), t, float(pos), eid))
     write(go)
     return episode(eid)
 
 
-def mark(eid, played, inbox_flag=None):
+def mark(eid, played, inbox_flag=None, skipped=None):
     if not isinstance(played, bool) and played is not None:
         raise Problem(400, 'played must be true or false.')
+    if not isinstance(skipped, bool) and skipped is not None:
+        raise Problem(400, 'skipped must be true or false.')
+    if played is None and skipped is None and inbox_flag is None:
+        raise Problem(400, 'Send played and/or skipped (true or false).')
     _ep_row(eid)
     t = now()
+    if skipped is not None:
+        skip(eid, skipped)
 
     def go(c):
         if played is True:
-            c.execute('UPDATE episodes SET played=1, played_at=?, inbox=0, position=0 WHERE id=?', (t, eid))
+            c.execute('UPDATE episodes SET played=1, played_at=?, inbox=0, position=0, skipped=0 WHERE id=?', (t, eid))
         elif played is False:
             c.execute('UPDATE episodes SET played=0, played_at=0, position=0 WHERE id=?', (eid,))
         if isinstance(inbox_flag, bool):
             c.execute('UPDATE episodes SET inbox=? WHERE id=?', (int(inbox_flag), eid))
     write(go)
     return episode(eid)
+
+
+# ------------------------------------------------------------------ skip (dismiss from the feed without playing)
+
+def _skip_rows(c, rows, t):
+    for r in rows:
+        if r['skipped'] or r['played']:
+            continue
+        dl = r['download'] or ''
+        started = r['position'] > 0
+        # A queued or running download stops now; a finished file stays through the Undo window, then goes.
+        if not started and dl in ('queued', 'downloading', 'failed'):
+            c.execute("UPDATE episodes SET download='', progress=0, download_error='' WHERE id=?", (r['id'],))
+        c.execute('UPDATE episodes SET skipped=1, skipped_at=?, skip_download=? WHERE id=?',
+                  (t, '' if started else ('' if dl == 'failed' else dl), r['id']))
+
+
+def _unskip_rows(c, rows):
+    t = now()
+    requeue = False
+    for r in rows:
+        if not r['skipped']:
+            continue
+        c.execute("UPDATE episodes SET skipped=0, skipped_at=0, skip_download='' WHERE id=?", (r['id'],))
+        # Undo puts back a download the skip cancelled (a finished file still on disk needs nothing).
+        if r['skip_download'] in ('queued', 'downloading', 'done') and (r['download'] or '') == '':
+            c.execute("UPDATE episodes SET download='queued', download_error='', queued_at=? WHERE id=?", (t, r['id']))
+            requeue = True
+    return requeue
+
+
+def skip(eid, skipped=True):
+    """Skip (or un-skip) one episode: hidden from the feed and Up next, not marked played. Idempotent."""
+    if not isinstance(skipped, bool):
+        raise Problem(400, 'skipped must be true or false.')
+    r = _ep_row(eid)
+    if skipped:
+        write(lambda c: _skip_rows(c, [r], now()))
+    elif write(lambda c: _unskip_rows(c, [r])):
+        wake_download.set()
+    return episode(eid)
+
+
+def skip_all(sid, skipped=True, episode_ids=None):
+    """Skip every episode of a show that is waiting in the feed; skipped=false with episode_ids (from the skip
+    answer) undoes exactly that batch, without episode_ids it brings back every skipped episode of the show."""
+    if not isinstance(skipped, bool):
+        raise Problem(400, 'skipped must be true or false.')
+    if not q('SELECT 1 FROM shows WHERE id=?', (sid,), one=True):
+        raise Problem(404, 'Show not found.')
+    if episode_ids is not None:
+        if not isinstance(episode_ids, list) or len(episode_ids) > 5000 or any(isinstance(i, bool) or not isinstance(i, int) for i in episode_ids):
+            raise Problem(400, 'episode_ids must be a list of episode ids.')
+    if skipped:
+        rows = q('SELECT * FROM episodes e WHERE e.show_id=? AND ' + _FEED_WHERE['unplayed'], (sid,))
+        write(lambda c: _skip_rows(c, rows, now()))
+    else:
+        rows = q('SELECT * FROM episodes WHERE show_id=? AND skipped=1', (sid,))
+        if episode_ids is not None:
+            want = set(episode_ids)
+            rows = [r for r in rows if r['id'] in want]
+        if write(lambda c: _unskip_rows(c, rows)):
+            wake_download.set()
+    return {'show_id': sid, 'skipped': skipped, 'count': len(rows), 'episode_ids': [r['id'] for r in rows]}
+
+
+def sweep_skipped(grace=None):
+    """Delete finished downloads of skipped, unstarted episodes once the Undo window has passed."""
+    grace = SKIP_GRACE_SECONDS if grace is None else grace
+    rows = q("SELECT * FROM episodes WHERE skipped=1 AND played=0 AND position=0 AND download='done' AND skipped_at<=?", (now() - grace,))
+    for r in rows:
+        write(lambda c, r=r: _remove_file(c, r))
+    return len(rows)
 
 
 # ------------------------------------------------------------------ downloads
@@ -824,8 +922,9 @@ def make_room(need, for_episode=None):
         return True
     exclude = for_episode['id'] if for_episode else -1
     newer_than = for_episode['published'] if for_episode else 1 << 62
-    victims = list(q("SELECT * FROM episodes WHERE download='done' AND played=1 AND id<>? ORDER BY played_at", (exclude,)))
-    victims += list(q("SELECT * FROM episodes WHERE download='done' AND played=0 AND position=0 AND id<>? AND published<? ORDER BY published",
+    victims = list(q("SELECT * FROM episodes WHERE download='done' AND skipped=1 AND played=0 AND position=0 AND id<>? ORDER BY skipped_at", (exclude,)))
+    victims += list(q("SELECT * FROM episodes WHERE download='done' AND played=1 AND id<>? ORDER BY played_at", (exclude,)))
+    victims += list(q("SELECT * FROM episodes WHERE download='done' AND played=0 AND position=0 AND skipped=0 AND id<>? AND published<? ORDER BY published",
                       (exclude, newer_than)))
     for v in victims:
         if used + need <= cap:
@@ -964,6 +1063,10 @@ def _download(r):
 
 def _download_loop():
     while True:
+        try:
+            sweep_skipped()
+        except Exception:
+            pass
         r = q("SELECT * FROM episodes WHERE download='queued' ORDER BY queued_at DESC LIMIT 1", one=True)
         if r is None:
             wake_download.wait(60)
@@ -1012,11 +1115,13 @@ def youtube_status():
 def status():
     s = get_settings()
     r = q("SELECT COUNT(*) n, SUM(download='done') d, SUM(download IN ('queued','downloading')) qd, SUM(download='failed') f, "
-          'SUM(inbox=1 AND played=0 AND position=0) new, SUM(position>0 AND played=0) started FROM episodes', one=True)
+          'SUM(inbox=1 AND played=0 AND position=0 AND skipped=0) new, SUM(position>0 AND played=0 AND skipped=0) started, '
+          'SUM(skipped=1 AND played=0) skipped FROM episodes', one=True)
     shows = q('SELECT COUNT(*) n, SUM(last_error<>\'\') bad FROM shows', one=True)
     used = storage_used()
     return {'app': 'wizard-podcasts', 'ok': True, 'shows': shows['n'] or 0, 'shows_with_errors': shows['bad'] or 0,
-            'episodes': r['n'] or 0, 'new_episodes': r['new'] or 0, 'in_progress': r['started'] or 0, 'downloaded': r['d'] or 0,
+            'episodes': r['n'] or 0, 'new_episodes': r['new'] or 0, 'in_progress': r['started'] or 0, 'skipped': r['skipped'] or 0,
+            'downloaded': r['d'] or 0,
             'download_queue': r['qd'] or 0, 'download_failures': r['f'] or 0, 'downloading_episode': _state['downloading'],
             'storage_used_mb': round(used / MB, 1), 'storage_cap_mb': s['storage_cap_mb'],
             'refresh_minutes': s['refresh_minutes'], 'last_refresh': _state['last_refresh'], 'refreshing': _state['refreshing'],

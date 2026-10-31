@@ -76,12 +76,16 @@ class FakeResp:
 
 FEEDS = {}
 PAGES = {}
+FLAKY = {}  # url -> number of 500 answers before the real one
 
 
 def fake_open(url, headers=None, timeout=20, method='GET', allow=None):
     netfetch.check_url(url)
     if allow is not None:
         assert allow(netfetch.urlsplit(url).hostname), url
+    if FLAKY.get(url, 0) > 0:
+        FLAKY[url] -= 1
+        return FakeResp(500, b'', {}, url)
     if url in PAGES:
         return FakeResp(200, PAGES[url], {'Content-Type': 'text/html'}, url)
     if url in FEEDS:
@@ -118,6 +122,7 @@ def server():
     os.environ['PORT'] = str(port)
     import server as S
     S.netfetch.open_url = fake_open
+    P.YOUTUBE_RETRY_SECONDS = 0
     P.init()
     P.start_workers()
     srv = S.Server(('127.0.0.1', port), S.Handler)
@@ -884,7 +889,169 @@ def test_view_smoke_minimal_screen():
         assert gone not in html and gone not in js, gone
     assert html.count('class="wz-sheet"') == 1
     assert 'api/feed' in js and 'WizardApp' in js and 'WzSheet.open' in js
-    for view in ('feed', 'add', 'show', 'episode', 'player'):
+    for view in ('feed', 'add', 'following', 'show', 'episode', 'player'):
         assert f'id="view-{view}"' in html
     r, body = req('GET', '/')
     assert r.status == 200 and b'id="chips"' in body and b'pc-tabs' not in body
+
+
+# ------------------------------------------------------------------ 0.3.1: skip (dismiss without playing) and shows list
+
+def test_migration_adds_skip_columns_to_an_old_database(tmp_path, monkeypatch):
+    import sqlite3
+    old = tmp_path / 'podcasts.sqlite3'
+    c = sqlite3.connect(old)
+    c.executescript(P.SCHEMA)
+    c.execute("INSERT INTO shows (feed_url, title, added_at) VALUES ('https://x.example/f.xml', 'Old', 1)")
+    c.execute("INSERT INTO episodes (show_id, guid, title, enclosure_url, first_seen, inbox) VALUES (1, 'g', 'Old ep', 'https://x.example/a.mp3', 1, 1)")
+    c.commit(); c.close()
+    monkeypatch.setattr(P, 'DATA', tmp_path)
+    monkeypatch.setattr(P, 'DB_PATH', old)
+    monkeypatch.setattr(P, 'EPISODES_DIR', tmp_path / 'episodes')
+    monkeypatch.setattr(P, 'ART_DIR', tmp_path / 'art')
+    P.init()
+    P.init()  # idempotent
+    row = P.q('SELECT * FROM episodes', one=True)
+    assert row['title'] == 'Old ep' and row['skipped'] == 0 and row['skipped_at'] == 0 and row['skip_download'] == ''
+    assert P.q('SELECT COUNT(*) n FROM shows', one=True)['n'] == 1
+
+
+def test_skip_hides_from_feed_frees_downloads_and_undo_restores():
+    now = int(time.time())
+    t0 = now + 4 * 10 ** 7  # newer than anything else in the shared test database
+    folder = P.EPISODES_DIR / 'skiptest'
+    folder.mkdir(parents=True, exist_ok=True)
+
+    def seed(c):
+        a = c.execute('INSERT INTO shows (feed_url, title, added_at, last_checked, auto_download) VALUES (?,?,?,?,0)',
+                      ('https://feeds.example.com/skip-a.xml', 'David Example', now, now)).lastrowid
+        b = c.execute('INSERT INTO shows (feed_url, title, added_at, last_checked, auto_download) VALUES (?,?,?,?,0)',
+                      ('https://feeds.example.com/skip-b.xml', 'Other Show', now, now)).lastrowid
+        ids = {}
+        # guid, published, position, download
+        for sid, guid, pub, pos, dl in [(a, 'done', t0 + 50, 0, 'done'), (a, 'queued', t0 + 40, 0, 'queued'),
+                                        (a, 'started', t0 + 30, 90, 'done'), (a, 'plain', t0 + 20, 0, ''),
+                                        (b, 'other', t0 + 10, 0, '')]:
+            f = ''
+            if dl == 'done':
+                path = folder / f'{guid}.mp3'
+                path.write_bytes(b'x' * 100)
+                f = P._rel(path)
+            ids[guid] = c.execute('INSERT INTO episodes (show_id, guid, title, published, enclosure_url, first_seen, inbox, position, position_at, '
+                                  'download, file, file_size, queued_at) VALUES (?,?,?,?,?,?,1,?,?,?,?,?,?)',
+                                  (sid, guid, guid, pub, 'https://cdn.example.com/' + guid + '.nope', now, pos, now if pos else 0, dl, f,
+                                   100 if f else 0, 0)).lastrowid
+        return a, b, ids
+    a, b, ids = P.write(seed)
+    try:
+        def get(qs=''):
+            r, body = req('GET', '/api/feed' + qs)
+            assert r.status == 200, body
+            return json.loads(body)
+
+        def titles(d):
+            return [e['title'] for e in d['episodes']]
+
+        def post(path, body):
+            r, data = req('POST', path, body)
+            return r.status, json.loads(data)
+
+        assert titles(get(f'?show_id={a}')) == ['done', 'queued', 'started', 'plain']
+        # skip one finished download: hidden from the feed, not played, listed under skipped and on the show page
+        st, ep = post(f'/api/episodes/{ids["done"]}/skip', {'skipped': True})
+        assert st == 200 and ep['skipped'] is True and ep['played'] is False and ep['download']['state'] == 'done'
+        assert titles(get(f'?show_id={a}')) == ['queued', 'started', 'plain']
+        assert titles(get(f'?show_id={a}&state=skipped')) == ['done']
+        show = json.loads(req('GET', f'/api/shows/{a}')[1])
+        assert [e['skipped'] for e in show['episodes']][:1] == [True] and show['show']['skipped'] == 1
+        unp = [s for s in get()['shows'] if s['id'] == a][0]['unplayed']
+        assert unp == 3
+        # Up next for agents leaves it out too; status counts it
+        inbox = json.loads(req('GET', f'/api/inbox?show_id={a}')[1])
+        assert ids['done'] not in [e['id'] for e in inbox['new'] + inbox['continue']]
+        assert json.loads(req('GET', '/api/status')[1])['skipped'] >= 1
+        # Undo inside the grace window: the file never left
+        st, ep = post(f'/api/episodes/{ids["done"]}/skip', {'skipped': False})
+        assert ep['skipped'] is False and ep['download']['state'] == 'done' and (folder / 'done.mp3').exists()
+        assert titles(get(f'?show_id={a}'))[0] == 'done'
+        # skip again; after the grace window the sweep deletes the file (frees space); Undo queues it again
+        post(f'/api/episodes/{ids["done"]}/skip', {})
+        assert P.sweep_skipped() == 0 and (folder / 'done.mp3').exists()
+        assert P.sweep_skipped(grace=-1) == 1 and not (folder / 'done.mp3').exists()
+        assert P.episode(ids['done'])['download']['state'] == 'none'
+        st, ep = post(f'/api/episodes/{ids["done"]}/skip', {'skipped': False})
+        assert ep['skipped'] is False and ep['download']['state'] in ('queued', 'downloading', 'failed')
+        P.write(lambda c: c.execute("UPDATE episodes SET download='', download_error='' WHERE id=?", (ids['done'],)))
+        # a queued download is cancelled at once
+        st, ep = post(f'/api/episodes/{ids["queued"]}/skip', {'skipped': True})
+        assert ep['download']['state'] == 'none'
+        post(f'/api/episodes/{ids["queued"]}/skip', {'skipped': False})
+        P.write(lambda c: c.execute("UPDATE episodes SET download='', download_error='' WHERE id=?", (ids['queued'],)))
+        # skip all from one show: its waiting rows leave the feed, the other show is untouched;
+        # a started episode keeps its download
+        st, r = post(f'/api/shows/{a}/skip-all', {})
+        assert st == 200 and r['count'] == 4 and set(r['episode_ids']) == {ids['done'], ids['queued'], ids['started'], ids['plain']}
+        assert titles(get(f'?show_id={a}')) == [] and titles(get(f'?show_id={b}')) == ['other']
+        assert P.sweep_skipped(grace=-1) == 0 and (folder / 'started.mp3').exists()
+        assert P.episode(ids['started'])['download']['state'] == 'done'
+        # Undo exactly that batch
+        st, r2 = post(f'/api/shows/{a}/skip-all', {'skipped': False, 'episode_ids': r['episode_ids']})
+        assert r2['count'] == 4 and titles(get(f'?show_id={a}')) == ['done', 'queued', 'started', 'plain']
+        # listening to a skipped episode brings it back; marking it played clears the skip
+        post(f'/api/episodes/{ids["plain"]}/skip', {})
+        post(f'/api/episodes/{ids["plain"]}/progress', {'position': 12})
+        assert P.episode(ids['plain'])['skipped'] is False
+        post(f'/api/episodes/{ids["plain"]}/skip', {})
+        post(f'/api/episodes/{ids["plain"]}/mark', {'played': True})
+        e = P.episode(ids['plain'])
+        assert e['played'] is True and e['skipped'] is False
+        # MCP podcasts_mark takes skipped (played optional)
+        def mcp(args):
+            return json.loads(req('POST', '/mcp', {'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
+                                                    'params': {'name': 'podcasts_mark', 'arguments': args}})[1])['result']
+        out = mcp({'episode_id': ids['other'], 'skipped': True})
+        assert out['isError'] is False and out['structuredContent']['skipped'] is True
+        assert titles(get(f'?show_id={b}')) == []
+        assert mcp({'episode_id': ids['other'], 'skipped': False})['structuredContent']['skipped'] is False
+        assert mcp({'episode_id': ids['other']})['isError'] is True
+        assert mcp({'episode_id': ids['other'], 'skipped': 'yes'})['isError'] is True
+        tools = json.loads(req('POST', '/mcp', {'jsonrpc': '2.0', 'id': 1, 'method': 'tools/list'})[1])['result']['tools']
+        schema = [t for t in tools if t['name'] == 'podcasts_mark'][0]['inputSchema']
+        assert schema['required'] == ['episode_id'] and schema['properties']['skipped']['type'] == 'boolean'
+        # bad input
+        assert post(f'/api/episodes/{ids["other"]}/skip', {'skipped': 'no'})[0] == 400
+        assert post('/api/episodes/99999999/skip', {})[0] == 404
+        assert post('/api/shows/99999999/skip-all', {})[0] == 404
+        assert post(f'/api/shows/{a}/skip-all', {'skipped': False, 'episode_ids': 'all'})[0] == 400
+        # through the gateway prefix
+        r, body = req('POST', f'/wizard-podcasts/api/episodes/{ids["other"]}/skip', {'skipped': False})
+        assert r.status == 200
+    finally:
+        P.write(lambda c: [c.execute('DELETE FROM episodes WHERE show_id=?', (i,)) or c.execute('DELETE FROM shows WHERE id=?', (i,)) for i in (a, b)])
+        import shutil
+        shutil.rmtree(folder, ignore_errors=True)
+
+
+def test_view_has_skip_and_shows_list():
+    html = (ROOT / 'web/index.html').read_text()
+    js = (ROOT / 'web/app.js').read_text()
+    css = (ROOT / 'web/styles.css').read_text()
+    assert 'id="open-shows"' in html and 'id="following-list"' in html and 'pc-tool-label' in html
+    assert "'/skip'" in js and 'skip-all' in js and "'Skipped'" in js and 'swipeable' in js
+    assert '.pc-skip' in css and 'min-width: 700px' in css
+    # no Podcasts/YouTube filter or kind label on the screen
+    assert 'YouTube' not in html and "kind" not in js.split('function feedPath')[1].split('}')[0]
+
+
+def test_youtube_follow_survives_a_flaky_feed_answer(connector):
+    cid = 'UC' + 'f' * 21 + 'Q'
+    PAGES['https://www.youtube.com/@flakychan'] = YT_PAGE.replace(CID.encode(), cid.encode())
+    FEEDS[youtube.feed_url(cid)] = YT_FEED.replace(CID[2:].encode(), cid[2:].encode()).replace(CID.encode(), cid.encode())
+    FLAKY[youtube.feed_url(cid)] = 1
+    r, body = req('POST', '/api/subscribe', {'url': '@flakychan'})
+    assert r.status == 200, body
+    show = json.loads(body)['show']
+    try:
+        assert show['feed_url'] == youtube.feed_url(cid) and show['episodes'] == 2
+    finally:
+        P.unsubscribe(show['id'])

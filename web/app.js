@@ -1,6 +1,6 @@
 'use strict';
-/* Podcasts view (0.3): one feed of episodes from followed shows, show chips + one filter sheet on top, a find button,
- * and a mini player. Talks only to this app's documented relative API (api/...). Platform behaviour (Back root,
+/* Podcasts view (0.3): one feed of episodes from followed shows, show chips + one filter sheet on top, a shows button
+ * and a find button, and a mini player. Feed rows work like notifications: tap plays, the row's Skip dismisses it. Talks only to this app's documented relative API (api/...). Platform behaviour (Back root,
  * appearance, update holds, ducking Music) comes from the shared WizardApp client. */
 const $ = id => document.getElementById(id);
 const W = window.WizardApp && window.WizardApp.version === 1 ? window.WizardApp : null;
@@ -14,6 +14,7 @@ const state = {
   shows: [],              // every followed show, newest episode first (from api/feed)
   feed: [], feedTotal: 0,
   show: null, showEpisodes: [],
+  following: null,        // the shows list as opened (unfollowed rows stay until it is left, so a refollow is one tap)
   episode: null,
   current: null,          // episode loaded in the player
   lastSaved: 0, savedPos: -1,
@@ -115,6 +116,8 @@ function icon(name) {
     play: '<path d="M8 5.5v13l11-6.5z" class="pc-fill"/>',
     pause: '<path d="M7 5h3.5v14H7zM13.5 5H17v14h-3.5z" class="pc-fill"/>',
     warn: '<path d="M12 4 3 20h18z"/><path d="M12 10v4.5M12 17.2v.3"/>',
+    skip: '<path d="M7 7l10 10M17 7 7 17"/>',
+    unskip: '<path d="M9 7 5 11l4 4"/><path d="M5 11h9a5 5 0 0 1 0 10h-2"/>',
   };
   const s = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
   s.setAttribute('viewBox', '0 0 24 24'); s.setAttribute('aria-hidden', 'true');
@@ -151,7 +154,7 @@ function renderNotes(target, html) {
 }
 
 // ------------------------------------------------------------------ navigation
-const VIEWS = ['feed', 'add', 'show', 'episode', 'player'];
+const VIEWS = ['feed', 'add', 'following', 'show', 'episode', 'player'];
 function currentView() { return state.stack.length ? state.stack.at(-1).view : 'feed'; }
 function paint() {
   const v = currentView();
@@ -189,6 +192,7 @@ async function load(view, id) {
   try {
     if (view === 'feed') return await loadFeed();
     if (view === 'add') { $('search-input').focus({ preventScroll: true }); return; }
+    if (view === 'following') return await loadFollowing();
     if (view === 'show') return renderShow(await api('api/shows/' + id + '?limit=' + PAGE));
     if (view === 'episode') return renderEpisode(await api('api/episodes/' + id));
     if (view === 'player') return renderPlayer();
@@ -226,7 +230,7 @@ const FILTER_KEY = 'wizard-podcasts.feed-filter';
 const filter = (() => {
   try {
     const f = JSON.parse(localStorage.getItem(FILTER_KEY) || '{}');
-    return { show: Number.isInteger(f.show) ? f.show : null, state: ['started', 'played'].includes(f.state) ? f.state : 'unplayed', sort: f.sort === 'oldest' ? 'oldest' : 'newest' };
+    return { show: Number.isInteger(f.show) ? f.show : null, state: ['started', 'played', 'skipped'].includes(f.state) ? f.state : 'unplayed', sort: f.sort === 'oldest' ? 'oldest' : 'newest' };
   } catch (_) { return { show: null, state: 'unplayed', sort: 'newest' }; }
 })();
 try { localStorage.removeItem('wizard-podcasts.upnext-filter'); } catch (_) {}  // the 0.2 filter, retired
@@ -245,9 +249,15 @@ function feedPath(offset = 0) {
   if (offset) qs.set('offset', String(offset));
   return 'api/feed?' + qs;
 }
-$('open-filter').onclick = () => sheet('Filter',
-  seg([['unplayed', 'Unplayed'], ['started', 'Started'], ['played', 'Played']], filter.state, v => setFilter({ state: v })),
-  seg([['newest', 'Newest first'], ['oldest', 'Oldest first']], filter.sort, v => setFilter({ sort: v })));
+$('open-filter').onclick = () => {
+  const rows = [
+    seg([['unplayed', 'Unplayed'], ['started', 'Started'], ['played', 'Played'], ['skipped', 'Skipped']], filter.state, v => setFilter({ state: v })),
+    seg([['newest', 'Newest first'], ['oldest', 'Oldest first']], filter.sort, v => setFilter({ sort: v }))];
+  // With one show chosen: clear everything it has waiting in one go (Undo in the toast).
+  const show = filter.show != null && state.shows.find(s => s.id === filter.show);
+  if (show && show.unplayed > 0) rows.push(sheetRow('Skip all from ' + (show.short_title || show.title), () => { closeSheet(); skipAll(show); }));
+  sheet('Filter', ...rows);
+};
 
 // ------------------------------------------------------------------ show chips
 let chipSig = '';
@@ -316,6 +326,8 @@ function showSheet(show) {
   }, 'pc-danger');
   const rows = [];
   if (currentView() !== 'show') rows.push(sheetRow('All episodes', () => { closeSheet(); openView('show', show.id); }));
+  const waiting = state.shows.find(s => s.id === show.id)?.unplayed ?? show.unplayed ?? 0;
+  if (waiting > 0) rows.push(sheetRow('Skip all from ' + (show.short_title || show.title), () => { closeSheet(); skipAll(show); }));
   rows.push(auto, unsub);
   sheet(show.title, ...rows);
 }
@@ -329,6 +341,135 @@ async function unfollow(show) {
     if (currentView() === 'show') finish('Unfollowed ' + show.title, undo);
     else { toast('Unfollowed ' + show.title, undo); reload(); }
   } catch (e) { say(e.message, 'error'); }
+}
+
+// ------------------------------------------------------------------ skip: rows are dismissed like notifications
+async function skipAll(show) {
+  try {
+    const r = await api('api/shows/' + show.id + '/skip-all', {});
+    if (state.current && r.episode_ids.includes(state.current.id) && audio.paused) unloadPlayer();
+    toast(r.count ? 'Skipped ' + r.count : 'Nothing to skip', r.count ? async () => {
+      await api('api/shows/' + show.id + '/skip-all', { skipped: false, episode_ids: r.episode_ids }); reload();
+    } : null);
+    reload();
+  } catch (e) { say(e.message, 'error'); }
+}
+// One tap: the row leaves in place (feed) or turns quiet (show page); Undo lives in the toast.
+async function skipEpisode(li, ep, on) {
+  li.classList.add('pc-busy');
+  let fresh;
+  try { fresh = await api('api/episodes/' + ep.id + '/skip', { skipped: on }); }
+  catch (e) { li.classList.remove('pc-busy'); resetSwipe(li); say(e.message, 'error'); return; }
+  if (on && state.current?.id === ep.id && audio.paused) unloadPlayer();
+  const undo = async () => { await api('api/episodes/' + ep.id + '/skip', { skipped: !on }); reload(); };
+  toast(on ? 'Skipped' : 'Back in your feed', undo);
+  if (currentView() === 'feed') removeRow(li, ep.id);
+  else { const row = episodeRow(fresh, { showShow: li.dataset.showShow === '1' }); li.replaceWith(row); }
+}
+function removeRow(li, id) {
+  state.feed = state.feed.filter(e => e.id !== id);
+  state.feedTotal = Math.max(0, state.feedTotal - 1);
+  const drop = () => {
+    const sec = li.closest('.pc-group');
+    li.remove();
+    if (sec && !sec.querySelector('.pc-ep')) sec.remove();
+    if (!state.feed.length) renderFeed();
+  };
+  if (matchMedia('(prefers-reduced-motion: reduce)').matches) return drop();
+  li.style.height = li.offsetHeight + 'px';
+  requestAnimationFrame(() => { li.classList.add('pc-gone'); li.style.height = '0px'; });
+  setTimeout(drop, 220);
+}
+// Phone: swipe a feed row left to skip it. Edges stay with the shell's own gestures; vertical moves scroll.
+const EDGE = 28;
+function resetSwipe(li) { li.classList.remove('pc-swiping', 'pc-armed'); li.style.removeProperty('--dx'); }
+function swipeable(li, onSkip) {
+  let id = null, x0 = 0, y0 = 0, dx = 0, mode = '';
+  li.addEventListener('pointerdown', e => {
+    if (e.pointerType !== 'touch' || id !== null) return;
+    if (e.clientX < EDGE || e.clientX > document.documentElement.clientWidth - EDGE) return;
+    id = e.pointerId; x0 = e.clientX; y0 = e.clientY; dx = 0; mode = '';
+  });
+  li.addEventListener('pointermove', e => {
+    if (e.pointerId !== id) return;
+    const mx = e.clientX - x0, my = e.clientY - y0;
+    if (!mode) {
+      if (mx < -12 && Math.abs(mx) > Math.abs(my) * 1.6) { mode = 'swipe'; li.classList.add('pc-swiping'); try { li.setPointerCapture(id); } catch (_) {} }
+      else if (Math.abs(my) > 10 || mx > 12) { id = null; return; }
+      else return;
+    }
+    dx = Math.min(0, mx);
+    li.style.setProperty('--dx', dx + 'px');
+    li.classList.toggle('pc-armed', -dx > li.clientWidth * 0.3);
+  });
+  const end = e => {
+    if (e.pointerId !== id) return;
+    id = null;
+    if (mode !== 'swipe') return;
+    li.__swiped = true; setTimeout(() => { li.__swiped = false; }, 400);
+    if (e.type === 'pointerup' && -dx > li.clientWidth * 0.3) { li.style.setProperty('--dx', -li.clientWidth + 'px'); onSkip(); }
+    else resetSwipe(li);
+  };
+  li.addEventListener('pointerup', end);
+  li.addEventListener('pointercancel', end);
+}
+
+// ------------------------------------------------------------------ your shows (follow / unfollow, open a show)
+$('open-shows').onclick = () => { state.following = null; openView('following'); };
+async function loadFollowing() {
+  const d = await api('api/feed?limit=1');
+  state.shows = d.shows || [];
+  const byUrl = new Map(state.shows.map(s => [s.feed_url, s]));
+  const rows = [], seen = new Set();
+  for (const s of state.following || []) {  // keep rows unfollowed here, so following again is one tap
+    seen.add(s.feed_url);
+    const cur = byUrl.get(s.feed_url);
+    rows.push(cur ? { ...cur, followed: true } : { ...s, followed: false });
+  }
+  for (const s of state.shows) if (!seen.has(s.feed_url)) rows.push({ ...s, followed: true });
+  state.following = rows;
+  $('following-list').replaceChildren(...rows.map(followRow));
+}
+function followRow(s) {
+  const li = el('li', 'pc-ep pc-show-row' + (s.followed ? '' : ' pc-played'));
+  const open = el('button', 'wz-row pc-ep-open');
+  open.type = 'button';
+  let img;
+  if (s.artwork) { img = el('img', 'pc-art pc-art-row'); img.alt = ''; img.loading = 'lazy'; img.src = s.artwork; }
+  else { img = el('span', 'pc-art pc-art-row pc-chip-ph', (s.title || '?').slice(0, 1)); img.setAttribute('aria-hidden', 'true'); }
+  const main = el('span', 'wz-main');
+  const meta = el('small', 'pc-meta');
+  meta.append(el('span', 'pc-meta-when', s.latest ? posted(s.latest) : ''));
+  if (s.latest) meta.title = postedFull(s.latest);
+  main.append(el('b', 'pc-clamp', s.title), meta);
+  open.append(img, main);
+  open.disabled = !s.followed;
+  open.onclick = () => { if (open.__held) { open.__held = false; return; } if (s.followed) openView('show', s.id); };
+  const btn = el('button', 'pc-follow');
+  btn.type = 'button';
+  const paintBtn = () => { btn.textContent = s.followed ? 'Following' : 'Follow'; btn.setAttribute('aria-pressed', String(s.followed)); btn.setAttribute('aria-label', (s.followed ? 'Unfollow ' : 'Follow ') + s.title); };
+  paintBtn();
+  btn.onclick = async () => {
+    btn.disabled = true;
+    try {
+      if (s.followed) {
+        await api('api/shows/' + s.id + '/unsubscribe', {});
+        if (state.current?.show_id === s.id) unloadPlayer();
+        if (filter.show === s.id) { filter.show = null; saveFilter(); }
+        s.followed = false;
+      } else {
+        const r = await api('api/subscribe', { url: s.feed_url, auto_download: s.auto_download });
+        Object.assign(s, { id: r.show.id, followed: true });
+      }
+      li.classList.toggle('pc-played', !s.followed);
+      open.disabled = !s.followed;
+      paintBtn();
+    } catch (e) { say(e.message, 'error'); }
+    finally { btn.disabled = false; }
+  };
+  holdable(open, () => s.followed && showSheet(s));
+  li.append(open, btn);
+  return li;
 }
 
 // ------------------------------------------------------------------ feed
@@ -349,8 +490,10 @@ async function loadFeed(append = false) {
 $('feed-more').onclick = () => loadFeed(true).catch(e => say(e.message, 'error'));
 
 function episodeRow(ep, { showShow = true } = {}) {
-  const li = el('li', 'pc-ep' + (ep.played ? ' pc-played' : ''));
+  const li = el('li', 'pc-ep' + (ep.played || ep.skipped ? ' pc-played' : ''));
   li.dataset.id = ep.id;
+  li.dataset.showShow = showShow ? '1' : '';
+  if (state.current?.id === ep.id) li.classList.add('pc-current');
   const open = el('button', 'wz-row pc-ep-open');
   open.type = 'button';
   const img = el('img', 'pc-art pc-art-row'); img.alt = ''; img.loading = 'lazy';
@@ -376,8 +519,21 @@ function episodeRow(ep, { showShow = true } = {}) {
     const w = el('span', 'pc-failed'); w.append(icon('warn')); w.title = 'Download failed';
     w.setAttribute('aria-label', 'Download failed'); open.append(w);
   }
-  open.onclick = () => openView('episode', ep.id);
+  // Tapping the row plays it (the playing row pauses); notes live behind the player's title.
+  open.onclick = () => { if (li.__swiped) return; if (state.current?.id === ep.id) togglePlay(); else playEpisode(ep); };
+  open.setAttribute('aria-label', 'Play ' + ep.title);
   li.append(open);
+  if (!ep.played) {
+    const on = !ep.skipped;
+    const x = el('button', 'pc-skip');
+    x.type = 'button';
+    x.append(icon(on ? 'skip' : 'unskip'));
+    x.title = on ? 'Skip' : 'Unskip';
+    x.setAttribute('aria-label', (on ? 'Skip ' : 'Unskip ') + ep.title);
+    x.onclick = () => skipEpisode(li, ep, on);
+    li.append(x);
+    if (on && currentView() === 'feed') swipeable(li, () => skipEpisode(li, ep, true));
+  }
   return li;
 }
 // Episodes in quiet date sections (Today, Yesterday, weekdays, Last week, months) in the server's order, so
@@ -408,10 +564,10 @@ function renderFeed() {
     $('feed-empty-text').textContent = 'Follow a show to see its episodes here.';
     go.hidden = false; go.textContent = 'Find shows'; go.onclick = () => openView('add');
   } else if (filter.show != null) {
-    $('feed-empty-text').textContent = filter.state === 'played' ? 'Nothing played yet.' : filter.state === 'started' ? 'Nothing started.' : 'Nothing new.';
+    $('feed-empty-text').textContent = filter.state === 'played' ? 'Nothing played yet.' : filter.state === 'started' ? 'Nothing started.' : filter.state === 'skipped' ? 'Nothing skipped.' : 'Nothing new.';
     go.hidden = false; go.textContent = 'All episodes'; go.onclick = () => openView('show', filter.show);
   } else {
-    $('feed-empty-text').textContent = filter.state === 'played' ? 'Nothing played yet.' : filter.state === 'started' ? 'Nothing started.' : 'All caught up.';
+    $('feed-empty-text').textContent = filter.state === 'played' ? 'Nothing played yet.' : filter.state === 'started' ? 'Nothing started.' : filter.state === 'skipped' ? 'Nothing skipped.' : 'All caught up.';
   }
 }
 
@@ -640,11 +796,16 @@ function loadIntoPlayer(ep, autoplay) {
     if (p) p.catch(e => { if (e.name !== 'AbortError') say('Could not start playback: ' + e.message, 'error'); });
   }
 }
-async function playEpisode(ep) {
-  if (state.current && state.current.id !== ep.id) await saveProgress(true);
-  // Fresh position from the server (another device may have moved it).
-  try { ep = await api('api/episodes/' + ep.id); } catch (_) {}
+function playEpisode(ep) {
+  if (state.current && state.current.id !== ep.id) saveProgress(true);  // reads the old place synchronously
+  // Start inside the tap (mobile browsers need it), then catch up with a newer place saved on another device.
   loadIntoPlayer(ep, true);
+  syncFromServer();
+  markCurrentRow();
+}
+function markCurrentRow() {
+  for (const n of document.querySelectorAll('.pc-ep.pc-current')) n.classList.remove('pc-current');
+  if (state.current) for (const n of document.querySelectorAll('.pc-ep[data-id="' + state.current.id + '"]')) n.classList.add('pc-current');
 }
 function togglePlay() {
   if (!state.current) return;
@@ -672,6 +833,7 @@ function unloadPlayer() {
   audio.removeAttribute('src'); audio.load();
   state.current = null;
   $('mini').hidden = true;
+  markCurrentRow();
 }
 function skip(sec) {
   if (!state.current) return;
@@ -807,15 +969,15 @@ $('pl-mark').onclick = async () => {
 if (!W) {
   say('Wizard system functions are unavailable. Open Podcasts through Wizard.', 'error');
 } else {
-  W.ready({ name: 'wizard-podcasts', version: '0.3.0' });
-  // Domain Back: close the nested view (find, show, episode, player); at the feed, the core decides.
+  W.ready({ name: 'wizard-podcasts', version: '0.3.1' });
+  // Domain Back: close the nested view (find, shows, show, episode, player); at the feed, the core decides.
   W.back.register({ canGoBack: () => state.stack.length > 0, back: () => popView() });
 }
 document.addEventListener('visibilitychange', async () => {
   if (document.hidden) { beaconProgress(); return; }
   // Back in front: pick up position changes made on another device while paused here.
   if (state.current && audio.paused) { await syncFromServer(); paintPlayer(); }
-  if (currentView() !== 'add') reload();
+  if (!['add', 'following'].includes(currentView())) reload();
 });
 window.addEventListener('pagehide', beaconProgress);
 
