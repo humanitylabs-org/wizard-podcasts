@@ -1058,7 +1058,7 @@ $('pl-mark').onclick = async () => {
 if (!W) {
   say('Wizard system functions are unavailable. Open Podcasts through Wizard.', 'error');
 } else {
-  W.ready({ name: 'wizard-podcasts', version: '0.3.2' });
+  W.ready({ name: 'wizard-podcasts', version: '0.3.3' });
   // Domain Back: close the nested view (find, shows, show, episode, player); at the feed, the core decides.
   W.back.register({ canGoBack: () => state.stack.length > 0, back: () => popView() });
 }
