@@ -338,3 +338,16 @@
     --wz-surface-raised: color-mix(in srgb, var(--wz-text) 10%, transparent);
   }
 }
+
+/* 0.5.5 (Miguel, 4 Nov 2026: "every app extremely friendly, easy to use, intuitive, and also mobile friendly"):
+ * the full player fits one screen, so Mark played and the show thumbs are visible without scrolling. The cover gives
+ * way first (never below 120px); on a phone the eight speeds sit in one row of equal 44px cells. */
+.pc-art-xl { width: max(120px, min(72vw, 340px, 34vh, calc(100vh - 556px))); }
+@container wz-app (width < 700px) {
+  .pc-player { gap: 8px; padding-bottom: 4px; }
+  .pc-player .pc-art-xl { margin-top: 0; width: max(120px, min(72vw, 340px, 34vh, calc(100vh - 532px))); }
+  .pc-speeds { display: grid; grid-template-columns: repeat(8, minmax(0, 1fr)); gap: 2px; padding: 2px 0; }
+  .pc-speed { min-width: 0; padding: 0; font-size: var(--wz-text-sm, .8125rem); }
+}
+@media (pointer: coarse) { .pc-link { min-height: 44px; } }
+
