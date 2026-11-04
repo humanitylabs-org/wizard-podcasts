@@ -100,7 +100,9 @@ function dateGroup(ts, now = new Date()) {
   return { key: 'month-' + d.getFullYear() + '-' + d.getMonth(), label: d.toLocaleDateString(undefined, opts) };
 }
 // When an episode was posted, for a row: '12 min ago', '3h ago', 'Yesterday 9:14 PM', 'Wed 9:14 PM', 'Oct 21'.
-function posted(ts, now = new Date()) {
+// Under a feed date heading that already says the day (Yesterday, Wednesday) the row shows just '9:14 PM', so the
+// show name has room on a phone.
+function posted(ts, now = new Date(), grouped = false) {
   if (!ts) return '';
   const d = new Date(ts * 1000), diff = daysBetween(now, d), secs = (now - d) / 1000;
   if (diff <= 0) {
@@ -108,6 +110,7 @@ function posted(ts, now = new Date()) {
     if (secs < 3600) return Math.floor(secs / 60) + ' min ago';
     return Math.floor(secs / 3600) + 'h ago';
   }
+  if (grouped && dateGroup(ts, now).key.startsWith(diff === 1 ? 'yesterday' : 'day-')) return timeOfDay(d);
   if (diff === 1) return 'Yesterday ' + timeOfDay(d);
   if (diff < 7) return d.toLocaleDateString(undefined, { weekday: 'short' }) + ' ' + timeOfDay(d);
   return day(ts);
@@ -568,7 +571,7 @@ async function skipEpisode(li, ep, on) {
   const undo = async () => { await api('api/episodes/' + ep.id + '/skip', { skipped: !on }); reload(); };
   toast(on ? 'Skipped' : 'Back in your feed', undo);
   if (currentView() === 'feed') removeRow(li, ep.id);
-  else { const row = episodeRow(fresh, { showShow: li.dataset.showShow === '1' }); li.replaceWith(row); }
+  else { const row = episodeRow(fresh, { showShow: li.dataset.showShow === '1', grouped: li.dataset.grouped === '1' }); li.replaceWith(row); }
 }
 function removeRow(li, id) {
   state.feed = state.feed.filter(e => e.id !== id);
@@ -830,10 +833,11 @@ async function loadFeed(append = false) {
 }
 $('feed-more').onclick = () => loadFeed(true).catch(e => say(e.message, 'error'));
 
-function episodeRow(ep, { showShow = true } = {}) {
+function episodeRow(ep, { showShow = true, grouped = false } = {}) {
   const li = el('li', 'pc-ep' + (ep.played || ep.skipped ? ' pc-played' : ''));
   li.dataset.id = ep.id;
   li.dataset.showShow = showShow ? '1' : '';
+  li.dataset.grouped = grouped ? '1' : '';
   if (state.current?.id === ep.id) li.classList.add('pc-current');
   const open = el('button', 'wz-row pc-ep-open');
   open.type = 'button';
@@ -842,7 +846,7 @@ function episodeRow(ep, { showShow = true } = {}) {
   const main = el('span', 'wz-main');
   const meta = el('small', 'pc-meta');
   const bits = [];
-  const when = posted(ep.published);
+  const when = posted(ep.published, new Date(), grouped);
   if (when) bits.push(when);
   if (ep.duration) bits.push(minutes(ep.duration));
   // the show name gives way first on a narrow row; when and how long always stay whole
@@ -907,7 +911,7 @@ function renderFeed() {
     const sec = el('section', 'pc-group');
     sec.dataset.group = g.key;
     const ul = el('ul', 'wz-list');
-    ul.append(...g.eps.map(e => episodeRow(e, { showShow })));
+    ul.append(...g.eps.map(e => episodeRow(e, { showShow, grouped: true })));
     sec.append(el('h2', 'pc-day-h', g.label), ul);
     return sec;
   }));
@@ -1465,7 +1469,7 @@ $('pl-mark').onclick = async () => {
 if (!W) {
   say('Wizard system functions are unavailable. Open Podcasts through Wizard.', 'error');
 } else {
-  W.ready({ name: 'wizard-podcasts', version: '0.5.1' });
+  W.ready({ name: 'wizard-podcasts', version: '0.5.5' });
   // Domain Back: close the page on top (show, episode, player), then Discover -> My feed; at My feed the core decides.
   W.back.register({ canGoBack: () => state.stack.length > 0 || state.tab !== 'feed', back: () => popView() });
 }

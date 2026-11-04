@@ -1665,3 +1665,38 @@ def test_new_follow_rebuilds_discover_soon(monkeypatch):
         D.wake.clear()
     src = (ROOT / 'app/server.py').read_text()
     assert src.count('D.note_follow(r)') == 2  # MCP podcasts_subscribe and POST /api/subscribe
+
+
+# ------------------------------------------------------------------ 0.5.5: friendly on a phone
+
+def test_friendly_phone_pass():
+    import json, shutil, subprocess
+    """Miguel, 4 Nov 2026: "every app extremely friendly, easy to use, intuitive, and also mobile friendly".
+    A feed row under a heading that already names the day shows just the time (room for the show name); the full
+    player fits one phone screen (cover gives way, eight speeds in one row); the Discover hint is not cut off."""
+    js = (ROOT / 'web/app.js').read_text()
+    css = (ROOT / 'web/styles.css').read_text()
+    html = (ROOT / 'web/index.html').read_text()
+    assert "ul.append(...g.eps.map(e => episodeRow(e, { showShow, grouped: true })));" in js
+    assert "grouped: li.dataset.grouped === '1'" in js
+    assert 'placeholder="Search shows or paste a feed"' in html and 'aria-label="Search shows, or paste a feed address or @handle"' in html
+    assert '.pc-speeds { display: grid; grid-template-columns: repeat(8, minmax(0, 1fr));' in css
+    assert 'calc(100vh - 556px)' in css and '@media (pointer: coarse) { .pc-link { min-height: 44px; } }' in css
+    assert "W.ready({ name: 'wizard-podcasts', version: '0.5.5' })" in js
+    node = shutil.which('node')
+    if not node:
+        import pytest
+        pytest.skip('node not installed')
+    pure = js.split('/* pure:start')[1].split('/* pure:end */')[0].split('*/', 1)[1]
+    now = 1793500000 + 4 * 86400  # Thursday 5 Nov 2026, 02:26 UTC (two days back is in this week for any week start)
+    script = pure + f'''
+const now = new Date({now} * 1000), D = 86400, t = (s) => posted({now} - s, now, true), u = (s) => posted({now} - s, now);
+console.log(JSON.stringify([t(600), t(D), u(D), t(2 * D), u(2 * D), t(9 * D), u(9 * D)]));
+'''
+    out = subprocess.run([node, '-e', script], capture_output=True, text=True, timeout=30, env={'TZ': 'UTC', 'PATH': '/usr/bin:/bin'})
+    assert out.returncode == 0, out.stderr
+    got = json.loads(out.stdout)
+    assert got[0] == '10 min ago'
+    assert got[1] == got[1].strip() and not got[1].startswith('Yesterday') and got[2].startswith('Yesterday ')
+    assert got[2].endswith(got[1]) and got[4].endswith(got[3]) and got[3] != got[4]  # weekday dropped under its heading
+    assert got[5] == got[6]  # older rows keep their date
