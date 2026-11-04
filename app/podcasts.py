@@ -836,6 +836,79 @@ def episode(eid):
     return episode_dict(r, detail=True)
 
 
+# ------------------------------------------------------------------ Reply (context for a Chats draft)
+# The view hands these to WizardApp.nav.openContextDraft; the shell opens an UNSENT Chats draft with the item
+# attached. The app never sends anything. Plain text an agent can act on; no secrets (there are none here).
+
+def _utc(ts):
+    return time.strftime('%Y-%m-%d %H:%M UTC', time.gmtime(ts)) if ts else 'unknown'
+
+
+def _hms(sec):
+    sec = int(sec or 0)
+    return f'{sec // 3600}:{sec // 60 % 60:02d}:{sec % 60:02d}' if sec >= 3600 else f'{sec // 60}:{sec % 60:02d}'
+
+
+def _excerpt(text, limit):
+    text = (text or '').strip()
+    if len(text) <= limit:
+        return text
+    cut = text[:limit].rsplit(' ', 1)[0]
+    return cut.rstrip(' ,.;:') + ' …'
+
+
+def _ctx(key, title, lines):
+    return {'id': key, 'title': title[:200], 'message': '\n'.join(lines)[:32000]}
+
+
+def episode_context(eid):
+    e = episode(eid)
+    s = q('SELECT * FROM shows WHERE id=?', (e['show_id'],), one=True)
+    status = ('played' if e['played'] else 'skipped' if e['skipped'] else
+              f"started, at {_hms(e['position'])}" if e['position'] > 0 else 'not played yet')
+    show = e['show_title'] or ''
+    if s and s['author'] and s['author'] != show:
+        show += f" by {s['author']}"
+    lines = [f"Podcasts episode: {e['title']} (episode id {e['id']}, show id {e['show_id']})",
+             f"Show: {show}" + (' (YouTube channel)' if s and youtube.is_feed(s['feed_url']) else ''),
+             f"Published: {_utc(e['published'])}" + (f"; length {_hms(e['duration'])}" if e['duration'] else ''),
+             f"Status: {status}; download {e['download']['state']}"]
+    if e['link']:
+        lines.append(f"Link: {e['link']}")
+    if e['transcript']['feed_transcript_url']:
+        lines.append(f"Publisher transcript: {e['transcript']['feed_transcript_url']}")
+    notes = _excerpt(e['notes_text'], 4000)
+    if notes:
+        lines += ['', 'Show notes:', notes]
+    lines += ['', f"Podcasts tools: podcasts_episode with episode_id {e['id']} gives the full notes; "
+                  'podcasts_mark marks it played or skipped (only on the owner\'s word).']
+    return _ctx(f"episode-{e['id']}", f"Podcasts: {e['title']}", lines)
+
+
+def show_context(sid):
+    d = show_detail(sid, 5)
+    s, eps = d['show'], d['episodes']
+    lines = [f"Podcasts show: {s['title']} (show id {s['id']}" + (', YouTube channel)' if s['source'] == 'youtube' else ')')]
+    if s['author'] and s['author'] != s['title']:
+        lines.append(f"By: {s['author']}")
+    lines.append(f"Followed; {s['episodes']} episodes, {s['unplayed']} unplayed, {s['new']} new in My feed; "
+                 f"auto-download {'on' if s['auto_download'] else 'off'}")
+    lines.append(f"Feed: {s['feed_url']}")
+    if s['link']:
+        lines.append(f"Website: {s['link']}")
+    if s['last_error']:
+        lines.append(f"Last check failed: {s['last_error']}")
+    about = _excerpt(feeds.notes_text(d['show'].get('description_html')), 1500)
+    if about:
+        lines += ['', 'About:', about]
+    if eps:
+        lines += ['', 'Latest episodes (newest first):']
+        lines += [f"- {_utc(e['published'])[:10]}: {e['title']} (episode id {e['id']}"
+                  + (', played)' if e['played'] else ', skipped)' if e['skipped'] else ')') for e in eps]
+    lines += ['', f"Podcasts tools: podcasts_list with show_id {s['id']} lists its episodes; podcasts_taste rates the show."]
+    return _ctx(f"show-{s['id']}", f"Podcasts: {s['title']}", lines)
+
+
 def _ep_row(eid):
     r = q('SELECT * FROM episodes WHERE id=?', (eid,), one=True)
     if not r:

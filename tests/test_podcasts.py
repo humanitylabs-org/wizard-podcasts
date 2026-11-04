@@ -1665,3 +1665,28 @@ def test_new_follow_rebuilds_discover_soon(monkeypatch):
         D.wake.clear()
     src = (ROOT / 'app/server.py').read_text()
     assert src.count('D.note_follow(r)') == 2  # MCP podcasts_subscribe and POST /api/subscribe
+
+
+def test_reply_context_for_episode_and_show():
+    """Reply: GET api/episodes/<id>/context and api/shows/<id>/context give {id,title,message} for an unsent Chats draft."""
+    FEEDS['https://feeds.example.com/reply.xml'] = RSS
+    r, body = req('POST', '/api/subscribe', {'url': 'https://feeds.example.com/reply.xml'})
+    assert r.status == 200, body
+    sid = json.loads(body)['show']['id']
+    eps = json.loads(req('GET', f'/api/shows/{sid}')[1])['episodes']
+    eid = eps[0]['id']
+    r, body = req('GET', f'/wizard-podcasts/api/episodes/{eid}/context')
+    assert r.status == 200, body
+    c = json.loads(body)
+    assert set(c) == {'id', 'title', 'message'}
+    assert c['id'] == f'episode-{eid}' and re.fullmatch(r'[A-Za-z0-9_-]{1,128}', c['id'])
+    assert c['title'] == 'Podcasts: ' + eps[0]['title'] and len(c['title']) <= 1000
+    assert f'episode id {eid}' in c['message'] and f'show id {sid}' in c['message'] and 'Published: ' in c['message']
+    assert 'Status: ' in c['message'] and len(c['message']) <= 32000
+    r, body = req('GET', f'/api/shows/{sid}/context')
+    s = json.loads(body)
+    assert r.status == 200 and s['id'] == f'show-{sid}' and s['title'].startswith('Podcasts: ')
+    assert 'Feed: https://feeds.example.com/reply.xml' in s['message'] and 'Latest episodes' in s['message']
+    assert req('GET', '/api/episodes/999999/context')[0].status == 404
+    assert req('POST', f'/api/episodes/{eid}/context', {})[0].status == 404
+    assert P._excerpt('word ' * 2000, 100).endswith(' …') and len(P._excerpt('word ' * 2000, 100)) <= 102
