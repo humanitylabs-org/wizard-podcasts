@@ -21,7 +21,7 @@ from podcasts import Problem  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 APP_ID = 'wizard-podcasts'
-VERSION = '0.5.5'
+VERSION = '0.5.6'
 PORT = int(os.environ.get('PORT', '9207'))
 PREFIX = '/' + APP_ID
 STATIC_TYPES = {'.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8',
@@ -214,8 +214,8 @@ def rpc(msg):
 # ------------------------------------------------------------------ HTTP
 
 RANGE = re.compile(r'^bytes=(\d*)-(\d*)$')
-EP_ROUTE = re.compile(r'^/api/episodes/(\d+)(?:/(audio|progress|mark|skip|download|delete-download))?$')
-SHOW_ROUTE = re.compile(r'^/api/shows/(\d+)(?:/(art|refresh|unsubscribe|skip-all))?$')
+EP_ROUTE = re.compile(r'^/api/episodes/(\d+)(?:/(audio|context|progress|mark|skip|download|delete-download))?$')
+SHOW_ROUTE = re.compile(r'^/api/shows/(\d+)(?:/(art|context|refresh|unsubscribe|skip-all))?$')
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -336,16 +336,20 @@ class Handler(BaseHTTPRequestHandler):
                     self.wfile.write(body)
                 return
             m = SHOW_ROUTE.match(path)
-            if m and m.group(2) in (None, 'art'):
+            if m and m.group(2) in (None, 'art', 'context'):
                 sid = int(m.group(1))
+                if m.group(2) == 'context':
+                    return self.send(200, P.show_context(sid))
                 if m.group(2) == 'art':
                     data, ctype = P.art(sid)
                     return self.send(200, data, ctype, cache='private, max-age=86400')
                 qs = self.query()
                 return self.send(200, P.show_detail(sid, int(qs.get('limit', '100')), int(qs.get('offset', '0'))))
             m = EP_ROUTE.match(path)
-            if m and m.group(2) in (None, 'audio'):
+            if m and m.group(2) in (None, 'audio', 'context'):
                 eid = int(m.group(1))
+                if m.group(2) == 'context':
+                    return self.send(200, P.episode_context(eid))
                 if m.group(2) == 'audio':
                     return self.audio(eid)
                 return self.send(200, P.episode(eid))
