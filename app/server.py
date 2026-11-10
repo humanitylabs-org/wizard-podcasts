@@ -42,6 +42,10 @@ SWITCHES = [
      'description': 'Feed rows under a day heading show just the time, so the show name fits; the full player fits one '
                     'phone screen; the Discover search hint is not cut off; show links are easier to tap.',
      'default': False, 'issues': ['humanitylabs-org/wizard-podcasts#18']},
+    {'id': 'reply', 'name': 'Reply',
+     'description': 'A Reply button on an episode page and in a show\'s menu opens a new, unsent Chats draft with that '
+                    'episode or show attached, so you can start a thread with your agent about it. Nothing is sent.',
+     'default': False, 'issues': ['humanitylabs-org/wizard-podcasts#19']},
 ]
 _SWITCH_LOCK = threading.Lock()
 

@@ -1769,3 +1769,17 @@ def test_reply_context_for_episode_and_show():
     assert req('GET', '/api/episodes/999999/context')[0].status == 404
     assert req('POST', f'/api/episodes/{eid}/context', {})[0].status == 404
     assert P._excerpt('word ' * 2000, 100).endswith(' …') and len(P._excerpt('word ' * 2000, 100)) <= 102
+
+
+def test_reply_behind_switch_off_by_default():
+    """Issue 19: Reply lands behind the owner switch `reply`, off by default and linked to its issue."""
+    owner = {'X-Wizard-Switch': '1', 'Tailscale-User-Login': 'owner@example.com'}
+    (P.DATA / 'switches.json').unlink(missing_ok=True)
+    sw = {s['id']: s for s in json.loads(req('GET', '/api/switches', headers=owner)[1])['switches']}
+    assert sw['reply']['on'] is False and sw['reply']['default'] is False
+    assert sw['reply']['issues'] == ['humanitylabs-org/wizard-podcasts#19']
+    js = (ROOT / 'web/app.js').read_text()
+    assert "const canReply = () => switchOn('reply') && typeof window.WizardApp?.nav?.openContextDraft === 'function';" in js
+    assert js.count('canReply()') >= 4  # prefetch, sheet row, episode button, applySwitches
+    assert 'id="ep-reply"' in (ROOT / 'web/index.html').read_text() and 'hidden>Reply</button>' in (ROOT / 'web/index.html').read_text()
+    assert '| `reply` (Reply) |' in (ROOT / 'README.md').read_text()

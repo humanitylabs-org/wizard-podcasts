@@ -45,8 +45,9 @@ function say(text, kind = '') {
 // Reply: opens an UNSENT main Chats draft with the episode or show attached (WizardApp.nav.openContextDraft).
 // The context is prefetched when the page opens, so the tap calls the shell synchronously (user activation).
 // Older Wizard shells have no openContextDraft: Reply just is not shown. This app never sends anything.
+// Behind the owner switch reply (issue 19): off, no Reply button, no sheet row and no context fetch.
 const replyCtx = {};
-const canReply = () => typeof window.WizardApp?.nav?.openContextDraft === 'function';
+const canReply = () => switchOn('reply') && typeof window.WizardApp?.nav?.openContextDraft === 'function';
 function prefetchReply(kind, id) {
   if (!canReply()) return;
   api('api/' + kind + 's/' + id + '/context').then(c => { replyCtx[kind + '-' + id] = c; }).catch(() => {});
@@ -1136,6 +1137,9 @@ function applySwitches() {
   const friendly = switchOn('friendly-phone');
   document.documentElement.toggleAttribute('data-pc-friendly', friendly);
   $('search-input').placeholder = friendly ? SEARCH_HINT.on : SEARCH_HINT.off;
+  // reply (issue 19): show or hide Reply on an open episode page right away.
+  $('ep-reply').hidden = !canReply();
+  if (canReply() && currentView() === 'episode' && state.episode?.id) prefetchReply('episode', state.episode.id);
 }
 async function loadSwitches() {
   const was = JSON.stringify(switches);
