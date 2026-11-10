@@ -42,6 +42,31 @@ function say(text, kind = '') {
   s.textContent = text;
   if (kind === 'error') setTimeout(() => { if (s.textContent === text) s.textContent = ''; }, 6000);
 }
+// Reply: opens an UNSENT main Chats draft with the episode or show attached (WizardApp.nav.openContextDraft).
+// The context is prefetched when the page opens, so the tap calls the shell synchronously (user activation).
+// Older Wizard shells have no openContextDraft: Reply just is not shown. This app never sends anything.
+// Behind the owner switch reply (issue 19): off, no Reply button, no sheet row and no context fetch.
+const replyCtx = {};
+const canReply = () => switchOn('reply') && typeof window.WizardApp?.nav?.openContextDraft === 'function';
+function prefetchReply(kind, id) {
+  if (!canReply()) return;
+  api('api/' + kind + 's/' + id + '/context').then(c => { replyCtx[kind + '-' + id] = c; }).catch(() => {});
+}
+function reply(kind, id) {
+  try {
+    const nav = window.WizardApp?.nav;
+    if (typeof nav?.openContextDraft !== 'function') throw new Error('Context draft unavailable');
+    const ctx = replyCtx[kind + '-' + id];
+    if (!ctx) throw new Error('Still loading this ' + kind + '. Try again in a second. Nothing sent.');
+    const receipt = nav.openContextDraft(ctx);
+    if (receipt?.kind !== 'unsent-draft' || receipt.sent !== false) throw new Error('Could not confirm an unsent draft. Nothing was sent.');
+    say('Draft opened in Chats with this ' + kind + ' attached. Nothing sent.', 'note');
+    return true;
+  } catch (e) {
+    say(e.message === 'Context draft unavailable' ? 'Reload Wizard (refresh the whole page) to turn on Reply. Nothing sent.' : (e.message || 'Could not open Chats. Nothing sent.'), 'error');
+    return false;
+  }
+}
 let toastTimer = 0;
 // A toast says what happened, with Undo and at most one more action (e.g. thumbs down in the player offers Unfollow).
 function toast(text, undo, extra) {
@@ -535,6 +560,7 @@ function showSheet(show) {
   const rows = [];
   const waiting = state.shows.find(s => s.id === show.id)?.unplayed ?? show.unplayed ?? 0;
   if (waiting > 0) rows.push(sheetRow('Skip all from ' + (show.short_title || show.title), () => { closeSheet(); skipAll(show); }));
+  if (canReply()) rows.push(sheetRow('Reply', () => { if (reply('show', show.id)) closeSheet(); }));
   rows.push(auto, unsub);
   sheet(show.title, ...rows);
 }
@@ -948,6 +974,7 @@ function renderShow(data, append = false) {
   const list = $('show-episodes');
   if (!append) list.replaceChildren();
   for (const e of data.episodes) list.append(episodeRow(e, { showShow: false }));
+  if (!append) prefetchReply('show', s.id);
   $('show-more').hidden = state.showEpisodes.length >= s.episodes;
   if (s.pending) setTimeout(() => { if (currentView() === 'show' && state.show?.id === s.id) load('show', s.id); }, 4000);
 }
@@ -987,6 +1014,9 @@ function renderEpisode(ep) {
     } catch (e) { say(e.message, 'error'); }
   };
   renderNotes($('ep-notes'), ep.notes_html);
+  $('ep-reply').hidden = !canReply();
+  $('ep-reply').onclick = () => reply('episode', ep.id);
+  prefetchReply('episode', ep.id);
   clearTimeout(epPoll);
   if (['queued', 'downloading'].includes(d.state)) epPoll = setTimeout(() => { if (currentView() === 'episode' && state.episode?.id === ep.id && !document.hidden) load('episode', ep.id); }, 4000);
 }
@@ -1107,6 +1137,9 @@ function applySwitches() {
   const friendly = switchOn('friendly-phone');
   document.documentElement.toggleAttribute('data-pc-friendly', friendly);
   $('search-input').placeholder = friendly ? SEARCH_HINT.on : SEARCH_HINT.off;
+  // reply (issue 19): show or hide Reply on an open episode page right away.
+  $('ep-reply').hidden = !canReply();
+  if (canReply() && currentView() === 'episode' && state.episode?.id) prefetchReply('episode', state.episode.id);
 }
 async function loadSwitches() {
   const was = JSON.stringify(switches);
@@ -1515,7 +1548,7 @@ $('pl-mark').onclick = async () => {
 if (!W) {
   say('Wizard system functions are unavailable. Open Podcasts through Wizard.', 'error');
 } else {
-  W.ready({ name: 'wizard-podcasts', version: '0.5.5' });
+  W.ready({ name: 'wizard-podcasts', version: '0.5.6' });
   // Domain Back: close the page on top (show, episode, player), then Discover -> My feed; at My feed the core decides.
   W.back.register({ canGoBack: () => state.stack.length > 0 || state.tab !== 'feed', back: () => popView() });
 }
