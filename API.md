@@ -17,6 +17,7 @@ Base: the app root (`/` on port 9207, or `/wizard-podcasts/` through the Wizard 
 | GET | `/api/episodes/{id}` | full episode (see fields below) |
 | GET/HEAD | `/api/episodes/{id}/audio` | audio with **HTTP Range** (206 + `Content-Range`); local file when downloaded, otherwise the public enclosure streamed through the guarded fetcher |
 | GET | `/api/settings` | `{storage_cap_mb, refresh_minutes, auto_download, speed, skip_back, skip_forward}` |
+| GET | `/api/switches` | Owner feature switches (0.5.5, `wizard.app-switches/1`): `{contract, switches: [{id, name, description, on, default, issues}]}`. Owner only (header `X-Wizard-Switch: 1` and one Tailscale owner login, `WIZARD_OWNER_LOGINS` when set); otherwise 403. |
 | GET | `/api/opml` | OPML export of followed shows |
 | GET | `/api/discover?limit=&cursor=` | Discover (0.5.0): shows he might like, best first. `{items: [{feed_url, title, author, artwork, source: "rss"\|"youtube", genres, reason, kind: "for_you"\|"popular", score, taste, latest: {title, published, approx, playable}}], next_cursor, total, building, built_at}`. About 7 in 10 are `for_you` (similar to shows he follows or thumbed up; `reason` `Like <show>`, `Guest on <show>`, `More from <author>`) and 3 in 10 `popular` (`Popular in <genre>` / `Popular in the US`, `Popular in Thailand`). Never a followed show (same feed, Apple id, YouTube channel or name) or one he thumbed down; one card per show (a channel with a podcast of the same name folds into the podcast). `limit` 1–50 (default 20); page with `cursor` = the previous `next_cursor` (`null` at the end). `building: true` while the first pool is still being gathered (cards fill in over a few minutes). `latest.approx` = the date came from YouTube's "3 days ago". |
 | GET/HEAD | `/api/discover/audio?feed_url=` | preview: the newest episode of a Discover show, streamed with Range like `/api/episodes/{id}/audio` (YouTube through the YouTube Music app). Nothing is followed or saved. |
@@ -43,6 +44,7 @@ Episode fields: `id, show_id, show_title, title, published (unix), duration (s),
 | POST | `/api/episodes/{id}/download` | `{}` | queue a download |
 | POST | `/api/episodes/{id}/delete-download` | `{}` | stop or remove a download |
 | POST | `/api/settings` | partial settings | `storage_cap_mb` 256–512000, `refresh_minutes` 15–1440, `speed` 0.8–3, `auto_download` |
+| POST | `/api/switches` | `{id, on}` | Flip one owner feature switch (0.5.5); returns the same listing as GET. Owner only, with `X-Wizard-Switch: 1` and the box's own `Origin`. Unknown id 404, bad body 400, not the owner 403. State: `DATA_DIR/switches.json`. |
 | POST | `/api/opml` | `{opml: "<xml>"}` (≤ 2 MB) | import; shows load in the background |
 | POST | `/mcp` | JSON-RPC 2.0 | MCP tools (box-only: refused when forwarded/tailnet headers are present) |
 

@@ -32,6 +32,11 @@ view:
     build: python3 app/build_view.py
     dist: web
 health: /healthz
+# Feature switches (wizard.app-switches/1, wizard-os docs/APP_SWITCHES.md): the App Manager lists and flips them, so the
+# WizardOS Tracker's Try it works the same in every browser. Off by default.
+switches:
+  contract: wizard.app-switches/1
+  path: /api/switches
 provides: [podcasts]
 uses: [music-source]
 needs: []

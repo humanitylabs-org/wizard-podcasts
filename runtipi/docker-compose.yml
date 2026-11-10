@@ -15,6 +15,8 @@ services:
       PODCASTS_YOUTUBE_SOURCES: wizard-youtube-music=http://wizard-youtube-music:9206
       WIZARD_TRUSTED_HOSTS: ${WIZARD_TRUSTED_HOSTS:-}
       WIZARD_TRUSTED_ORIGINS: ${WIZARD_TRUSTED_ORIGINS:-}
+      # The owner's Tailscale login(s); only the owner sees and flips feature switches (api/switches).
+      WIZARD_OWNER_LOGINS: ${WIZARD_OWNER_LOGINS:-}
     volumes:
       - ${APP_DATA_DIR}/data:/data
     ports: ['127.0.0.1:${APP_PORT:-9207}:9207']

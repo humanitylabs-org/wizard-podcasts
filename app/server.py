@@ -7,6 +7,7 @@ import json
 import os
 import re
 import sys
+import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
@@ -26,6 +27,52 @@ PREFIX = '/' + APP_ID
 STATIC_TYPES = {'.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8',
                 '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.json': 'application/json'}
 BOX_ONLY_HEADERS = ('tailscale-user-login', 'x-forwarded-for', 'forwarded', 'x-real-ip')
+# Who owns this Wizard (Tailscale logins, comma separated). Empty: any single Tailscale-named login (the box's own
+# Tailscale Serve names only people the tailnet lets in). Only the owner may see or flip feature switches.
+OWNER_LOGINS = {x.strip().lower() for x in os.environ.get('WIZARD_OWNER_LOGINS', '').split(',') if x.strip()}
+DEV_MODE = os.environ.get('PODCASTS_DEV_MODE') == 'loopback-single-owner'  # local QA only: loopback counts as the owner
+
+
+# ------------------------------------------------------------------ owner feature switches
+
+# wizard.app-switches/1 (wizard-os docs/APP_SWITCHES.md). Off by default; the state lives on the box in
+# DATA/switches.json, so the app's Settings, the Tracker's Try it (through the App Manager) and every device see one state.
+SWITCHES = [
+    {'id': 'friendly-phone', 'name': 'Friendlier on a phone',
+     'description': 'Feed rows under a day heading show just the time, so the show name fits; the full player fits one '
+                    'phone screen; the Discover search hint is not cut off; show links are easier to tap.',
+     'default': False, 'issues': ['humanitylabs-org/wizard-podcasts#18']},
+]
+_SWITCH_LOCK = threading.Lock()
+
+
+def _switch_file():
+    return P.DATA / 'switches.json'
+
+
+def _saved_switches():
+    try:
+        saved = json.loads(_switch_file().read_text())
+    except (OSError, ValueError):
+        saved = {}  # missing or unreadable: the defaults (off)
+    return saved if isinstance(saved, dict) else {}
+
+
+def switches_doc():
+    saved = _saved_switches()
+    return {'contract': 'wizard.app-switches/1', 'switches': [
+        dict(s, on=saved[s['id']] if isinstance(saved.get(s['id']), bool) else s['default']) for s in SWITCHES]}
+
+
+def set_switch(switch_id, on):
+    ids = {s['id'] for s in SWITCHES}
+    with _SWITCH_LOCK:
+        saved = {k: v for k, v in _saved_switches().items() if k in ids and isinstance(v, bool)}
+        saved[switch_id] = on
+        tmp = _switch_file().with_suffix('.json.tmp')
+        tmp.write_text(json.dumps(saved))
+        os.replace(tmp, _switch_file())
+    return switches_doc()
 
 
 def _csv(name):
@@ -198,6 +245,21 @@ class Handler(BaseHTTPRequestHandler):
         names = {k.lower() for k in self.headers.keys()}
         return any(h in names for h in BOX_ONLY_HEADERS) or any(n.startswith('cf-') for n in names)
 
+    def switch_owner(self, write=False):
+        """wizard.app-switches/1: only the owner, from the page (X-Wizard-Switch: 1) or the App Manager calling through
+        the box's Tailscale Serve, which names the owner. Never a bearer, an agent or a box-local host."""
+        if self.headers.get('X-Wizard-Switch') != '1' or self.headers.get('Authorization'):
+            return False
+        if (self.headers.get('Sec-Fetch-Site') or 'same-origin').lower() not in ('same-origin', 'none'):
+            return False
+        if write and not self.headers.get('Origin'):
+            return False
+        host = (self.headers.get('Host') or '').lower()
+        logins = [x.strip().lower() for x in self.headers.get_all('Tailscale-User-Login') or []]
+        if not logins:
+            return DEV_MODE and host in _LOCAL
+        return len(logins) == 1 and (logins[0] in OWNER_LOGINS if OWNER_LOGINS else '@' in logins[0])
+
     # -------- responses
     def headers_common(self, content_type, length):
         self.send_header('Content-Type', content_type)
@@ -259,6 +321,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send(200, P.inbox(_qint(qs.get('limit'), 100), qs.get('show_id'), qs.get('kind'), qs.get('state'), qs.get('sort'), qs.get('since'), qs.get('q')))
             if path == '/api/settings':
                 return self.send(200, P.get_settings())
+            if path == '/api/switches':
+                if not self.switch_owner():
+                    return self.send(403, {'error': 'Only this Wizard’s owner can see Podcasts switches.'})
+                return self.send(200, switches_doc())
             if path == '/api/opml':
                 body = P.export_opml().encode()
                 self.send_response(200)
@@ -436,6 +502,17 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send(200, P.refresh_all(force=True))
             if path == '/api/settings':
                 return self.send(200, P.set_settings(body))
+            if path == '/api/switches':
+                if not self.switch_owner(write=True):
+                    return self.send(403, {'error': 'Only this Wizard’s owner can switch Podcasts.'})
+                if not isinstance(body.get('id'), str) or not isinstance(body.get('on'), bool) or set(body) - {'id', 'on'}:
+                    return self.send(400, {'error': 'Send JSON {"id": "…", "on": true|false}.'})
+                if body['id'] not in {s['id'] for s in SWITCHES}:
+                    return self.send(404, {'error': 'No such switch.'})
+                try:
+                    return self.send(200, set_switch(body['id'], body['on']))
+                except OSError:
+                    return self.send(500, {'error': 'Podcasts could not save that switch.'})
             if path == '/api/opml':
                 return self.send(200, P.import_opml(body.get('opml')))
             m = SHOW_ROUTE.match(path)

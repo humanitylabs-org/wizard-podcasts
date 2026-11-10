@@ -1679,9 +1679,16 @@ def test_friendly_phone_pass():
     html = (ROOT / 'web/index.html').read_text()
     assert "ul.append(...g.eps.map(e => episodeRow(e, { showShow, grouped: true })));" in js
     assert "grouped: li.dataset.grouped === '1'" in js
-    assert 'placeholder="Search shows or paste a feed"' in html and 'aria-label="Search shows, or paste a feed address or @handle"' in html
-    assert '.pc-speeds { display: grid; grid-template-columns: repeat(8, minmax(0, 1fr));' in css
-    assert 'calc(100vh - 556px)' in css and '@media (pointer: coarse) { .pc-link { min-height: 44px; } }' in css
+    # behind the owner switch friendly-phone (issue 18): off keeps the old hint, rows and player
+    assert 'placeholder="Search, or paste a feed or @handle"' in html and 'aria-label="Search shows, or paste a feed address or @handle"' in html
+    assert "on: 'Search shows or paste a feed'" in js
+    assert "posted(ep.published, new Date(), grouped && switchOn('friendly-phone'))" in js
+    assert "document.documentElement.toggleAttribute('data-pc-friendly', friendly)" in js
+    assert 'html[data-pc-friendly] .pc-speeds { display: grid; grid-template-columns: repeat(8, minmax(0, 1fr));' in css
+    assert 'calc(100vh - 556px)' in css and '@media (pointer: coarse) { html[data-pc-friendly] .pc-link { min-height: 44px; } }' in css
+    gated = css.split('Switch friendly-phone (issue 18')[1].split('*/', 1)[1]
+    rules = [l.strip() for l in gated.splitlines() if '{' in l and not l.strip().startswith('@')]
+    assert rules and all(r.startswith('html[data-pc-friendly] ') for r in rules), rules
     assert "W.ready({ name: 'wizard-podcasts', version: '0.5.5' })" in js
     node = shutil.which('node')
     if not node:
@@ -1700,3 +1707,40 @@ console.log(JSON.stringify([t(600), t(D), u(D), t(2 * D), u(2 * D), t(9 * D), u(
     assert got[1] == got[1].strip() and not got[1].startswith('Yesterday') and got[2].startswith('Yesterday ')
     assert got[2].endswith(got[1]) and got[4].endswith(got[3]) and got[3] != got[4]  # weekday dropped under its heading
     assert got[5] == got[6]  # older rows keep their date
+
+
+def test_owner_switches_api_off_by_default_and_owner_only(monkeypatch):
+    """wizard.app-switches/1 (issue 18): friendly-phone is off by default, kept on the box, owner only."""
+    owner = {'X-Wizard-Switch': '1', 'Tailscale-User-Login': 'owner@example.com'}
+    write = dict(owner, Origin=f'http://127.0.0.1:{PORT}')
+    (P.DATA / 'switches.json').unlink(missing_ok=True)
+    r, d = req('GET', '/api/switches', headers=owner)
+    assert r.status == 200
+    doc = json.loads(d)
+    assert doc['contract'] == 'wizard.app-switches/1'
+    sw = {s['id']: s for s in doc['switches']}
+    assert sw['friendly-phone']['on'] is False and sw['friendly-phone']['default'] is False
+    assert sw['friendly-phone']['issues'] == ['humanitylabs-org/wizard-podcasts#18']
+    # not the owner: no switch header, no login, a bearer, two logins, a cross-site page
+    assert req('GET', '/api/switches')[0].status == 403
+    assert req('GET', '/api/switches', headers={'X-Wizard-Switch': '1'})[0].status == 403
+    assert req('GET', '/api/switches', headers=dict(owner, Authorization='Bearer x'))[0].status == 403
+    assert req('POST', '/api/switches', {'id': 'friendly-phone', 'on': True}, headers=dict(write, **{'Sec-Fetch-Site': 'cross-site'}))[0].status == 403
+    assert req('POST', '/api/switches', {'id': 'friendly-phone', 'on': True}, headers=owner)[0].status == 403  # no Origin
+    assert req('POST', '/api/switches', {'id': 'friendly-phone', 'on': True}, headers=dict(write, **{'X-Wizard-Switch': '0'}))[0].status == 403
+    # a named owner list is honoured
+    monkeypatch.setattr(S, 'OWNER_LOGINS', {'someone@else.com'})
+    assert req('GET', '/api/switches', headers=owner)[0].status == 403
+    monkeypatch.setattr(S, 'OWNER_LOGINS', set())
+    # bad body, unknown id
+    assert req('POST', '/api/switches', {'id': 'friendly-phone', 'on': 'yes'}, headers=write)[0].status == 400
+    assert req('POST', '/api/switches', {'id': 'nope', 'on': True}, headers=write)[0].status == 404
+    # flip on, read back, kept on the box
+    r, d = req('POST', '/api/switches', {'id': 'friendly-phone', 'on': True}, headers=write)
+    assert r.status == 200 and json.loads(d)['switches'][0]['on'] is True
+    assert json.loads(req('GET', '/api/switches', headers=owner)[1])['switches'][0]['on'] is True
+    assert json.loads((P.DATA / 'switches.json').read_text()) == {'friendly-phone': True}
+    r, d = req('POST', '/api/switches', {'id': 'friendly-phone', 'on': False}, headers=write)
+    assert json.loads(d)['switches'][0]['on'] is False
+    md = (ROOT / 'wizard.md').read_text()
+    assert 'contract: wizard.app-switches/1' in md and 'path: /api/switches' in md

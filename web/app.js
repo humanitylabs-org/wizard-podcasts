@@ -846,7 +846,7 @@ function episodeRow(ep, { showShow = true, grouped = false } = {}) {
   const main = el('span', 'wz-main');
   const meta = el('small', 'pc-meta');
   const bits = [];
-  const when = posted(ep.published, new Date(), grouped);
+  const when = posted(ep.published, new Date(), grouped && switchOn('friendly-phone'));
   if (when) bits.push(when);
   if (ep.duration) bits.push(minutes(ep.duration));
   // the show name gives way first on a narrow row; when and how long always stay whole
@@ -1094,6 +1094,50 @@ function resultRow(item) {
   return li;
 }
 
+// ------------------------------------------------------------------ owner feature switches (wizard.app-switches/1)
+// GET/POST api/switches; the state lives on the Wizard, so the gear's Try changes rows, the Tracker's Try it and every
+// device see one state. All off by default; re-read when the page comes back to the front.
+const SW_HEAD = { 'X-Wizard-Switch': '1' };
+let switches = [];
+function switchOn(id) { return !!switches.find(x => x.id === id)?.on; }
+const SEARCH_HINT = { off: 'Search, or paste a feed or @handle', on: 'Search shows or paste a feed' };
+function applySwitches() {
+  // friendly-phone (issue 18): rows under a day heading show just the time, the player fits one phone screen, the
+  // Discover hint is not cut off, 44px show links on touch screens (styles.css scopes its rules to html[data-pc-friendly]).
+  const friendly = switchOn('friendly-phone');
+  document.documentElement.toggleAttribute('data-pc-friendly', friendly);
+  $('search-input').placeholder = friendly ? SEARCH_HINT.on : SEARCH_HINT.off;
+}
+async function loadSwitches() {
+  const was = JSON.stringify(switches);
+  try {
+    const r = await fetch('api/switches', { cache: 'no-store', headers: SW_HEAD });
+    if (r.ok) switches = (await r.json()).switches || [];
+  } catch (_) { /* keep the last known switches (off by default) */ }
+  applySwitches();
+  if (was !== JSON.stringify(switches) && currentView() === 'feed') renderFeed();
+}
+async function setSwitch(id, on) {
+  const r = await fetch('api/switches', { method: 'POST', headers: { ...SW_HEAD, 'Content-Type': 'application/json' }, body: JSON.stringify({ id, on }) });
+  let body = {};
+  try { body = await r.json(); } catch (_) {}
+  if (!r.ok) throw new Error(body.error || 'Podcasts could not change that switch.');
+  switches = body.switches || switches;
+  applySwitches();
+  if (currentView() === 'feed') renderFeed();
+}
+function switchRows() {
+  return switches.map(s => {
+    const box = el('input'); box.type = 'checkbox'; box.checked = !!s.on;
+    box.onchange = () => setSwitch(s.id, box.checked).catch(e => { box.checked = !box.checked; say(e.message, 'error'); });
+    const row = el('label', 'pc-sheet-row pc-switch');
+    const words = el('span', '', s.name);
+    if (s.description) words.append(el('small', '', s.description));
+    row.append(words, box);
+    return row;
+  });
+}
+
 // ------------------------------------------------------------------ settings (the gear in Discover)
 $('open-settings').onclick = async () => {
   try {
@@ -1124,7 +1168,9 @@ $('open-settings').onclick = async () => {
       catch (e) { check.textContent = 'Check for new episodes'; say(e.message, 'error'); }
       finally { check.disabled = false; }
     });
-    sheet('Settings', field('Storage', cap, used), field('Check feeds', every), autoRow, check, imp, exp);
+    await loadSwitches();
+    const tries = switches.length ? [el('p', 'pc-field', 'Try changes'), ...switchRows()] : [];
+    sheet('Settings', field('Storage', cap, used), field('Check feeds', every), autoRow, check, imp, exp, ...tries);
   } catch (e) { say(e.message, 'error'); }
 };
 function pick(select, value, unit) {
@@ -1478,11 +1524,13 @@ document.addEventListener('visibilitychange', async () => {
   // Back in front: pick up position changes made on another device while paused here.
   if (state.current && audio.paused) { await syncFromServer(); paintPlayer(); }
   if (currentView() !== 'discover') reload();
+  loadSwitches();
 });
 window.addEventListener('pagehide', beaconProgress);
 
 (async function start() {
   try { state.settings = await api('api/settings'); } catch (_) {}
+  await loadSwitches();
   const qs = new URLSearchParams(location.search);
   paint();
   try { await loadFeed(); } catch (e) { say(e.message, 'error'); }

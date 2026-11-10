@@ -16,6 +16,16 @@ A private podcast player for [Wizard OS](https://www.aiwizards.com/wizard-apps).
 - **Your place is saved on the Wizard**, so the phone and desktop resume from the same spot. Mark played/unplayed and skips are saved there too, with Undo.
 - **Agent tools (MCP)**: `podcasts_status`, `podcasts_search`, `podcasts_subscribe`, `podcasts_list`, `podcasts_episode`, `podcasts_mark`. See `skill/SKILL.md` and `API.md`.
 
+## Try changes (feature switches)
+
+New behaviour lands switched off. The owner turns it on in the gear (Discover) under **Try changes**, or from the
+WizardOS Tracker's Try it (`GET/POST /api/switches`, `wizard.app-switches/1`). The state is kept on the Wizard, so every
+device sees the same.
+
+| Switch | What it changes | Issue |
+|---|---|---|
+| `friendly-phone` (Friendlier on a phone) | Feed rows under a day heading show just the time, so the show name fits; the full player fits one phone screen (cover gives way, eight speeds in one row); the Discover hint reads "Search shows or paste a feed"; 44 px show links on touch screens. | #18 |
+
 ## Safety
 
 - Podcast audio is only the public feed enclosure. YouTube audio comes only from the YouTube Music connector; Podcasts never contacts googlevideo itself. YouTube lookups (channel page, uploads feed, channel search, avatars) go only to youtube.com, ytimg.com, ggpht.com and yt3.googleusercontent.com, checked on every redirect hop on top of the public-address guard.
