@@ -324,6 +324,9 @@
 .pc-sheet-row:disabled { opacity: .6; }
 .pc-danger { color: var(--danger); }
 .pc-switch input { width: 22px; height: 22px; accent-color: var(--accent); }
+/* Try changes rows (owner feature switches): the name, then one quiet line saying what it changes. */
+.pc-switch small { display: block; padding-bottom: 6px; font-size: var(--wz-text-sm, .8125rem); font-weight: 400; color: var(--ink-3); }
+.pc-switch input { flex: none; }
 .pc-field { display: grid; gap: 6px; font-size: var(--wz-text-md, .875rem); font-weight: 600; color: var(--ink-2); }
 .pc-field select { height: 46px; background: var(--solid); }
 .pc-field select option { background: var(--canvas); color: var(--ink); }
@@ -338,3 +341,17 @@
     --wz-surface-raised: color-mix(in srgb, var(--wz-text) 10%, transparent);
   }
 }
+
+/* Switch friendly-phone (issue 18, off by default; Miguel, 4 Nov 2026: "every app extremely friendly, easy to use,
+ * intuitive, and also mobile friendly"): the full player fits one screen, so Mark played and the show thumbs are
+ * visible without scrolling. The cover gives way first (never below 120px); on a phone the eight speeds sit in one row
+ * of equal 44px cells. Every rule is scoped to html[data-pc-friendly], so with the switch off nothing changes. */
+html[data-pc-friendly] .pc-art-xl { width: max(120px, min(72vw, 340px, 34vh, calc(100vh - 556px))); }
+@container wz-app (width < 700px) {
+  html[data-pc-friendly] .pc-player { gap: 8px; padding-bottom: 4px; }
+  html[data-pc-friendly] .pc-player .pc-art-xl { margin-top: 0; width: max(120px, min(72vw, 340px, 34vh, calc(100vh - 532px))); }
+  html[data-pc-friendly] .pc-speeds { display: grid; grid-template-columns: repeat(8, minmax(0, 1fr)); gap: 2px; padding: 2px 0; }
+  html[data-pc-friendly] .pc-speed { min-width: 0; padding: 0; font-size: var(--wz-text-sm, .8125rem); }
+}
+@media (pointer: coarse) { html[data-pc-friendly] .pc-link { min-height: 44px; } }
+

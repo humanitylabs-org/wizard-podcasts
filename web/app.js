@@ -100,7 +100,9 @@ function dateGroup(ts, now = new Date()) {
   return { key: 'month-' + d.getFullYear() + '-' + d.getMonth(), label: d.toLocaleDateString(undefined, opts) };
 }
 // When an episode was posted, for a row: '12 min ago', '3h ago', 'Yesterday 9:14 PM', 'Wed 9:14 PM', 'Oct 21'.
-function posted(ts, now = new Date()) {
+// Under a feed date heading that already says the day (Yesterday, Wednesday) the row shows just '9:14 PM', so the
+// show name has room on a phone.
+function posted(ts, now = new Date(), grouped = false) {
   if (!ts) return '';
   const d = new Date(ts * 1000), diff = daysBetween(now, d), secs = (now - d) / 1000;
   if (diff <= 0) {
@@ -108,6 +110,7 @@ function posted(ts, now = new Date()) {
     if (secs < 3600) return Math.floor(secs / 60) + ' min ago';
     return Math.floor(secs / 3600) + 'h ago';
   }
+  if (grouped && dateGroup(ts, now).key.startsWith(diff === 1 ? 'yesterday' : 'day-')) return timeOfDay(d);
   if (diff === 1) return 'Yesterday ' + timeOfDay(d);
   if (diff < 7) return d.toLocaleDateString(undefined, { weekday: 'short' }) + ' ' + timeOfDay(d);
   return day(ts);
@@ -568,7 +571,7 @@ async function skipEpisode(li, ep, on) {
   const undo = async () => { await api('api/episodes/' + ep.id + '/skip', { skipped: !on }); reload(); };
   toast(on ? 'Skipped' : 'Back in your feed', undo);
   if (currentView() === 'feed') removeRow(li, ep.id);
-  else { const row = episodeRow(fresh, { showShow: li.dataset.showShow === '1' }); li.replaceWith(row); }
+  else { const row = episodeRow(fresh, { showShow: li.dataset.showShow === '1', grouped: li.dataset.grouped === '1' }); li.replaceWith(row); }
 }
 function removeRow(li, id) {
   state.feed = state.feed.filter(e => e.id !== id);
@@ -830,10 +833,11 @@ async function loadFeed(append = false) {
 }
 $('feed-more').onclick = () => loadFeed(true).catch(e => say(e.message, 'error'));
 
-function episodeRow(ep, { showShow = true } = {}) {
+function episodeRow(ep, { showShow = true, grouped = false } = {}) {
   const li = el('li', 'pc-ep' + (ep.played || ep.skipped ? ' pc-played' : ''));
   li.dataset.id = ep.id;
   li.dataset.showShow = showShow ? '1' : '';
+  li.dataset.grouped = grouped ? '1' : '';
   if (state.current?.id === ep.id) li.classList.add('pc-current');
   const open = el('button', 'wz-row pc-ep-open');
   open.type = 'button';
@@ -842,7 +846,7 @@ function episodeRow(ep, { showShow = true } = {}) {
   const main = el('span', 'wz-main');
   const meta = el('small', 'pc-meta');
   const bits = [];
-  const when = posted(ep.published);
+  const when = posted(ep.published, new Date(), grouped && switchOn('friendly-phone'));
   if (when) bits.push(when);
   if (ep.duration) bits.push(minutes(ep.duration));
   // the show name gives way first on a narrow row; when and how long always stay whole
@@ -907,7 +911,7 @@ function renderFeed() {
     const sec = el('section', 'pc-group');
     sec.dataset.group = g.key;
     const ul = el('ul', 'wz-list');
-    ul.append(...g.eps.map(e => episodeRow(e, { showShow })));
+    ul.append(...g.eps.map(e => episodeRow(e, { showShow, grouped: true })));
     sec.append(el('h2', 'pc-day-h', g.label), ul);
     return sec;
   }));
@@ -1090,6 +1094,50 @@ function resultRow(item) {
   return li;
 }
 
+// ------------------------------------------------------------------ owner feature switches (wizard.app-switches/1)
+// GET/POST api/switches; the state lives on the Wizard, so the gear's Try changes rows, the Tracker's Try it and every
+// device see one state. All off by default; re-read when the page comes back to the front.
+const SW_HEAD = { 'X-Wizard-Switch': '1' };
+let switches = [];
+function switchOn(id) { return !!switches.find(x => x.id === id)?.on; }
+const SEARCH_HINT = { off: 'Search, or paste a feed or @handle', on: 'Search shows or paste a feed' };
+function applySwitches() {
+  // friendly-phone (issue 18): rows under a day heading show just the time, the player fits one phone screen, the
+  // Discover hint is not cut off, 44px show links on touch screens (styles.css scopes its rules to html[data-pc-friendly]).
+  const friendly = switchOn('friendly-phone');
+  document.documentElement.toggleAttribute('data-pc-friendly', friendly);
+  $('search-input').placeholder = friendly ? SEARCH_HINT.on : SEARCH_HINT.off;
+}
+async function loadSwitches() {
+  const was = JSON.stringify(switches);
+  try {
+    const r = await fetch('api/switches', { cache: 'no-store', headers: SW_HEAD });
+    if (r.ok) switches = (await r.json()).switches || [];
+  } catch (_) { /* keep the last known switches (off by default) */ }
+  applySwitches();
+  if (was !== JSON.stringify(switches) && currentView() === 'feed') renderFeed();
+}
+async function setSwitch(id, on) {
+  const r = await fetch('api/switches', { method: 'POST', headers: { ...SW_HEAD, 'Content-Type': 'application/json' }, body: JSON.stringify({ id, on }) });
+  let body = {};
+  try { body = await r.json(); } catch (_) {}
+  if (!r.ok) throw new Error(body.error || 'Podcasts could not change that switch.');
+  switches = body.switches || switches;
+  applySwitches();
+  if (currentView() === 'feed') renderFeed();
+}
+function switchRows() {
+  return switches.map(s => {
+    const box = el('input'); box.type = 'checkbox'; box.checked = !!s.on;
+    box.onchange = () => setSwitch(s.id, box.checked).catch(e => { box.checked = !box.checked; say(e.message, 'error'); });
+    const row = el('label', 'pc-sheet-row pc-switch');
+    const words = el('span', '', s.name);
+    if (s.description) words.append(el('small', '', s.description));
+    row.append(words, box);
+    return row;
+  });
+}
+
 // ------------------------------------------------------------------ settings (the gear in Discover)
 $('open-settings').onclick = async () => {
   try {
@@ -1120,7 +1168,9 @@ $('open-settings').onclick = async () => {
       catch (e) { check.textContent = 'Check for new episodes'; say(e.message, 'error'); }
       finally { check.disabled = false; }
     });
-    sheet('Settings', field('Storage', cap, used), field('Check feeds', every), autoRow, check, imp, exp);
+    await loadSwitches();
+    const tries = switches.length ? [el('p', 'pc-field', 'Try changes'), ...switchRows()] : [];
+    sheet('Settings', field('Storage', cap, used), field('Check feeds', every), autoRow, check, imp, exp, ...tries);
   } catch (e) { say(e.message, 'error'); }
 };
 function pick(select, value, unit) {
@@ -1465,7 +1515,7 @@ $('pl-mark').onclick = async () => {
 if (!W) {
   say('Wizard system functions are unavailable. Open Podcasts through Wizard.', 'error');
 } else {
-  W.ready({ name: 'wizard-podcasts', version: '0.5.1' });
+  W.ready({ name: 'wizard-podcasts', version: '0.5.5' });
   // Domain Back: close the page on top (show, episode, player), then Discover -> My feed; at My feed the core decides.
   W.back.register({ canGoBack: () => state.stack.length > 0 || state.tab !== 'feed', back: () => popView() });
 }
@@ -1474,11 +1524,13 @@ document.addEventListener('visibilitychange', async () => {
   // Back in front: pick up position changes made on another device while paused here.
   if (state.current && audio.paused) { await syncFromServer(); paintPlayer(); }
   if (currentView() !== 'discover') reload();
+  loadSwitches();
 });
 window.addEventListener('pagehide', beaconProgress);
 
 (async function start() {
   try { state.settings = await api('api/settings'); } catch (_) {}
+  await loadSwitches();
   const qs = new URLSearchParams(location.search);
   paint();
   try { await loadFeed(); } catch (e) { say(e.message, 'error'); }
