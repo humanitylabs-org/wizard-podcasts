@@ -21,7 +21,7 @@ from podcasts import Problem  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 APP_ID = 'wizard-podcasts'
-VERSION = '0.5.6'
+VERSION = '0.5.7'
 PORT = int(os.environ.get('PORT', '9207'))
 PREFIX = '/' + APP_ID
 STATIC_TYPES = {'.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8',
@@ -39,8 +39,9 @@ DEV_MODE = os.environ.get('PODCASTS_DEV_MODE') == 'loopback-single-owner'  # loc
 # DATA/switches.json, so the app's Settings, the Tracker's Try it (through the App Manager) and every device see one state.
 SWITCHES = [
     {'id': 'friendly-phone', 'name': 'Friendlier on a phone',
-     'description': 'Feed rows under a day heading show just the time, so the show name fits; the full player fits one '
-                    'phone screen; the Discover search hint is not cut off; show links are easier to tap.',
+     'description': 'On a phone, feed rows give the show name its own line and show just the time under a day heading; '
+                    'the full player fits one phone screen; the Discover search hint is not cut off; show links are '
+                    'easier to tap.',
      'default': False, 'issues': ['humanitylabs-org/wizard-podcasts#18']},
     {'id': 'reply', 'name': 'Reply',
      'description': 'A Reply button on an episode page and in a show\'s menu opens a new, unsent Chats draft with that '
