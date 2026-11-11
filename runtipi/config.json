@@ -10,8 +10,8 @@
   "categories": [
     "media"
   ],
-  "tipi_version": 19,
-  "version": "0.5.7",
+  "tipi_version": 20,
+  "version": "0.5.8",
   "source": "https://github.com/humanitylabs-org/wizard-podcasts",
   "exposable": false,
   "supported_architectures": [
@@ -19,7 +19,7 @@
     "amd64"
   ],
   "created_at": 1793370089000,
-  "updated_at": 1794366898443,
+  "updated_at": 1794371948790,
   "dynamic_config": true,
   "min_tipi_version": "4.8.0",
   "uid": 1000,

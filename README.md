@@ -14,7 +14,6 @@ A private podcast player for [Wizard OS](https://www.aiwizards.com/wizard-apps).
 - **Auto-download** new episodes into the app's own storage, with a storage cap (default 2 GB). When full, played downloads go first, then the oldest unstarted ones. Per-episode limit 1 GB.
 - **Play** in the app: speed 0.8–3×, back 15 s / forward 30 s, seeking (HTTP Range), lock-screen controls where the browser supports them. Episodes that are not downloaded yet stream from the publisher through the app.
 - **Your place is saved on the Wizard**, so the phone and desktop resume from the same spot. Mark played/unplayed and skips are saved there too, with Undo.
-- **Reply** (0.5.6, switch `reply`, off by default): on an episode's page (next to Mark played and Download) and in a show's ⋯ menu, **Reply** opens a new, unsent Chats draft with that episode or show attached (title, show, date, status, link, a show-notes excerpt), so you can start a thread with your agent about it. Nothing is sent by the app. Shown only on Wizards whose shell has `WizardApp.nav.openContextDraft`.
 - **Agent tools (MCP)**: `podcasts_status`, `podcasts_search`, `podcasts_subscribe`, `podcasts_list`, `podcasts_episode`, `podcasts_mark`. See `skill/SKILL.md` and `API.md`.
 
 ## Try changes (feature switches)
@@ -26,7 +25,6 @@ device sees the same.
 | Switch | What it changes | Issue |
 |---|---|---|
 | `friendly-phone` (Friendlier on a phone) | On a phone, feed rows give the show name its own line (no longer cut to a few letters) and rows under a day heading show just the time; the full player fits one phone screen (cover gives way, eight speeds in one row); the Discover hint reads "Search shows or paste a feed"; 44 px show links on touch screens. | #18 |
-| `reply` (Reply) | A **Reply** button on an episode page and a Reply row in a show's ⋯ menu open a new, unsent Chats draft with that episode or show attached. Nothing is sent. | #19 |
 
 ## Safety
 

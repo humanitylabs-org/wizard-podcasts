@@ -1692,7 +1692,7 @@ def test_friendly_phone_pass():
     gated = css.split('Switch friendly-phone (issue 18')[1].split('*/', 1)[1]
     rules = [l.strip() for l in gated.splitlines() if '{' in l and not l.strip().startswith('@')]
     assert rules and all(r.startswith('html[data-pc-friendly] ') for r in rules), rules
-    assert "W.ready({ name: 'wizard-podcasts', version: '0.5.7' })" in js
+    assert "W.ready({ name: 'wizard-podcasts', version: '0.5.8' })" in js
     node = shutil.which('node')
     if not node:
         import pytest
@@ -1749,40 +1749,20 @@ def test_owner_switches_api_off_by_default_and_owner_only(monkeypatch):
     assert 'contract: wizard.app-switches/1' in md and 'path: /api/switches' in md
 
 
-def test_reply_context_for_episode_and_show():
-    """Reply: GET api/episodes/<id>/context and api/shows/<id>/context give {id,title,message} for an unsent Chats draft."""
-    FEEDS['https://feeds.example.com/reply.xml'] = RSS
-    r, body = req('POST', '/api/subscribe', {'url': 'https://feeds.example.com/reply.xml'})
-    assert r.status == 200, body
-    sid = json.loads(body)['show']['id']
-    eps = json.loads(req('GET', f'/api/shows/{sid}')[1])['episodes']
-    eid = eps[0]['id']
-    r, body = req('GET', f'/wizard-podcasts/api/episodes/{eid}/context')
-    assert r.status == 200, body
-    c = json.loads(body)
-    assert set(c) == {'id', 'title', 'message'}
-    assert c['id'] == f'episode-{eid}' and re.fullmatch(r'[A-Za-z0-9_-]{1,128}', c['id'])
-    assert c['title'] == 'Podcasts: ' + eps[0]['title'] and len(c['title']) <= 1000
-    assert f'episode id {eid}' in c['message'] and f'show id {sid}' in c['message'] and 'Published: ' in c['message']
-    assert 'Status: ' in c['message'] and len(c['message']) <= 32000
-    r, body = req('GET', f'/api/shows/{sid}/context')
-    s = json.loads(body)
-    assert r.status == 200 and s['id'] == f'show-{sid}' and s['title'].startswith('Podcasts: ')
-    assert 'Feed: https://feeds.example.com/reply.xml' in s['message'] and 'Latest episodes' in s['message']
-    assert req('GET', '/api/episodes/999999/context')[0].status == 404
-    assert req('POST', f'/api/episodes/{eid}/context', {})[0].status == 404
-    assert P._excerpt('word ' * 2000, 100).endswith(' …') and len(P._excerpt('word ' * 2000, 100)) <= 102
-
-
-def test_reply_behind_switch_off_by_default():
-    """Issue 19: Reply lands behind the owner switch `reply`, off by default and linked to its issue."""
+def test_reply_switch_and_code_removed():
+    """Issue 23: the dropped `reply` switch (issue 19) is gone with its code, and a saved value for it is pruned."""
     owner = {'X-Wizard-Switch': '1', 'Tailscale-User-Login': 'owner@example.com'}
+    (P.DATA / 'switches.json').write_text(json.dumps({'reply': True, 'friendly-phone': False}))
+    ids = [s['id'] for s in json.loads(req('GET', '/api/switches', headers=owner)[1])['switches']]
+    assert 'reply' not in ids
+    import server as S
+    S.prune_switches()
+    assert json.loads((P.DATA / 'switches.json').read_text()) == {'friendly-phone': False}
     (P.DATA / 'switches.json').unlink(missing_ok=True)
-    sw = {s['id']: s for s in json.loads(req('GET', '/api/switches', headers=owner)[1])['switches']}
-    assert sw['reply']['on'] is False and sw['reply']['default'] is False
-    assert sw['reply']['issues'] == ['humanitylabs-org/wizard-podcasts#19']
+    assert req('GET', '/api/episodes/1/context')[0].status == 404
+    assert req('GET', '/api/shows/1/context')[0].status == 404
+    assert not hasattr(P, 'episode_context') and not hasattr(P, 'show_context')
     js = (ROOT / 'web/app.js').read_text()
-    assert "const canReply = () => switchOn('reply') && typeof window.WizardApp?.nav?.openContextDraft === 'function';" in js
-    assert js.count('canReply()') >= 4  # prefetch, sheet row, episode button, applySwitches
-    assert 'id="ep-reply"' in (ROOT / 'web/index.html').read_text() and 'hidden>Reply</button>' in (ROOT / 'web/index.html').read_text()
-    assert '| `reply` (Reply) |' in (ROOT / 'README.md').read_text()
+    assert 'openContextDraft' not in js and "switchOn('reply')" not in js
+    assert 'ep-reply' not in (ROOT / 'web/index.html').read_text()
+    assert '`reply`' not in (ROOT / 'README.md').read_text() and '/context' not in (ROOT / 'API.md').read_text()
