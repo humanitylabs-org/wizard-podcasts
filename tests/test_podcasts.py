@@ -1679,20 +1679,17 @@ def test_friendly_phone_pass():
     html = (ROOT / 'web/index.html').read_text()
     assert "ul.append(...g.eps.map(e => episodeRow(e, { showShow, grouped: true })));" in js
     assert "grouped: li.dataset.grouped === '1'" in js
-    # behind the owner switch friendly-phone (issue 18): off keeps the old hint, rows and player
-    assert 'placeholder="Search, or paste a feed or @handle"' in html and 'aria-label="Search shows, or paste a feed address or @handle"' in html
-    assert "on: 'Search shows or paste a feed'" in js
-    assert "posted(ep.published, new Date(), grouped && switchOn('friendly-phone'))" in js
-    assert "document.documentElement.toggleAttribute('data-pc-friendly', friendly)" in js
-    assert 'html[data-pc-friendly] .pc-speeds { display: grid; grid-template-columns: repeat(8, minmax(0, 1fr));' in css
-    # 0.5.7: on a phone the show name gets its own line in feed rows (the visible part of the switch)
-    assert 'html[data-pc-friendly] .pc-ep .pc-meta-show { flex: 1 0 100%; }' in css
-    assert 'html[data-pc-friendly] .pc-ep .pc-meta-show + .pc-meta-sep { display: none; }' in css
-    assert 'calc(100vh - 556px)' in css and '@media (pointer: coarse) { html[data-pc-friendly] .pc-link { min-height: 44px; } }' in css
-    gated = css.split('Switch friendly-phone (issue 18')[1].split('*/', 1)[1]
-    rules = [l.strip() for l in gated.splitlines() if '{' in l and not l.strip().startswith('@')]
-    assert rules and all(r.startswith('html[data-pc-friendly] ') for r in rules), rules
-    assert "W.ready({ name: 'wizard-podcasts', version: '0.5.8' })" in js
+    # 0.5.9 (issue 18 approved): always on, the friendly-phone switch and its off path are gone
+    assert 'placeholder="Search shows or paste a feed"' in html and 'aria-label="Search shows, or paste a feed address or @handle"' in html
+    assert "posted(ep.published, new Date(), grouped)" in js
+    assert 'friendly' not in js and 'switchOn' not in js and 'applySwitches' not in js and 'SEARCH_HINT' not in js
+    assert 'data-pc-friendly' not in css and 'Search, or paste a feed or @handle' not in html + js
+    assert '.pc-speeds { display: grid; grid-template-columns: repeat(8, minmax(0, 1fr));' in css
+    # on a phone the show name gets its own line in feed rows
+    assert '  .pc-ep .pc-meta-show { flex: 1 0 100%; }' in css
+    assert '  .pc-ep .pc-meta-show + .pc-meta-sep { display: none; }' in css
+    assert 'calc(100vh - 556px)' in css and '@media (pointer: coarse) { .pc-link { min-height: 44px; } }' in css
+    assert "W.ready({ name: 'wizard-podcasts', version: '0.5.9' })" in js
     node = shutil.which('node')
     if not node:
         import pytest
@@ -1713,51 +1710,70 @@ console.log(JSON.stringify([t(600), t(D), u(D), t(2 * D), u(2 * D), t(9 * D), u(
 
 
 def test_owner_switches_api_off_by_default_and_owner_only(monkeypatch):
-    """wizard.app-switches/1 (issue 18): friendly-phone is off by default, kept on the box, owner only."""
+    """wizard.app-switches/1: switches are off by default, kept on the box, owner only. No switch is live right now
+    (friendly-phone became always on in issue 18), so this uses a stand-in switch."""
+    import server as S
     owner = {'X-Wizard-Switch': '1', 'Tailscale-User-Login': 'owner@example.com'}
     write = dict(owner, Origin=f'http://127.0.0.1:{PORT}')
     (P.DATA / 'switches.json').unlink(missing_ok=True)
+    r, d = req('GET', '/api/switches', headers=owner)
+    assert r.status == 200 and json.loads(d) == {'contract': 'wizard.app-switches/1', 'switches': []}
+    monkeypatch.setattr(S, 'SWITCHES', [{'id': 'demo', 'name': 'Demo', 'description': 'd', 'default': False,
+                                          'issues': ['humanitylabs-org/wizard-podcasts#0']}])
     r, d = req('GET', '/api/switches', headers=owner)
     assert r.status == 200
     doc = json.loads(d)
     assert doc['contract'] == 'wizard.app-switches/1'
     sw = {s['id']: s for s in doc['switches']}
-    assert sw['friendly-phone']['on'] is False and sw['friendly-phone']['default'] is False
-    assert sw['friendly-phone']['issues'] == ['humanitylabs-org/wizard-podcasts#18']
+    assert sw['demo']['on'] is False and sw['demo']['default'] is False
     # not the owner: no switch header, no login, a bearer, two logins, a cross-site page
     assert req('GET', '/api/switches')[0].status == 403
     assert req('GET', '/api/switches', headers={'X-Wizard-Switch': '1'})[0].status == 403
     assert req('GET', '/api/switches', headers=dict(owner, Authorization='Bearer x'))[0].status == 403
-    assert req('POST', '/api/switches', {'id': 'friendly-phone', 'on': True}, headers=dict(write, **{'Sec-Fetch-Site': 'cross-site'}))[0].status == 403
-    assert req('POST', '/api/switches', {'id': 'friendly-phone', 'on': True}, headers=owner)[0].status == 403  # no Origin
-    assert req('POST', '/api/switches', {'id': 'friendly-phone', 'on': True}, headers=dict(write, **{'X-Wizard-Switch': '0'}))[0].status == 403
+    assert req('POST', '/api/switches', {'id': 'demo', 'on': True}, headers=dict(write, **{'Sec-Fetch-Site': 'cross-site'}))[0].status == 403
+    assert req('POST', '/api/switches', {'id': 'demo', 'on': True}, headers=owner)[0].status == 403  # no Origin
+    assert req('POST', '/api/switches', {'id': 'demo', 'on': True}, headers=dict(write, **{'X-Wizard-Switch': '0'}))[0].status == 403
     # a named owner list is honoured
     monkeypatch.setattr(S, 'OWNER_LOGINS', {'someone@else.com'})
     assert req('GET', '/api/switches', headers=owner)[0].status == 403
     monkeypatch.setattr(S, 'OWNER_LOGINS', set())
     # bad body, unknown id
-    assert req('POST', '/api/switches', {'id': 'friendly-phone', 'on': 'yes'}, headers=write)[0].status == 400
+    assert req('POST', '/api/switches', {'id': 'demo', 'on': 'yes'}, headers=write)[0].status == 400
     assert req('POST', '/api/switches', {'id': 'nope', 'on': True}, headers=write)[0].status == 404
     # flip on, read back, kept on the box
-    r, d = req('POST', '/api/switches', {'id': 'friendly-phone', 'on': True}, headers=write)
+    r, d = req('POST', '/api/switches', {'id': 'demo', 'on': True}, headers=write)
     assert r.status == 200 and json.loads(d)['switches'][0]['on'] is True
     assert json.loads(req('GET', '/api/switches', headers=owner)[1])['switches'][0]['on'] is True
-    assert json.loads((P.DATA / 'switches.json').read_text()) == {'friendly-phone': True}
-    r, d = req('POST', '/api/switches', {'id': 'friendly-phone', 'on': False}, headers=write)
+    assert json.loads((P.DATA / 'switches.json').read_text()) == {'demo': True}
+    r, d = req('POST', '/api/switches', {'id': 'demo', 'on': False}, headers=write)
     assert json.loads(d)['switches'][0]['on'] is False
+    (P.DATA / 'switches.json').unlink(missing_ok=True)
     md = (ROOT / 'wizard.md').read_text()
     assert 'contract: wizard.app-switches/1' in md and 'path: /api/switches' in md
+
+
+def test_friendly_phone_switch_removed_and_saved_value_pruned():
+    """Issue 18 (switch-default): friendly-phone is always on; its switch is gone and a saved value for it is pruned."""
+    import server as S
+    owner = {'X-Wizard-Switch': '1', 'Tailscale-User-Login': 'owner@example.com'}
+    assert 'friendly-phone' not in {s['id'] for s in S.SWITCHES}
+    (P.DATA / 'switches.json').write_text(json.dumps({'friendly-phone': False}))
+    assert json.loads(req('GET', '/api/switches', headers=owner)[1])['switches'] == []
+    S.prune_switches()
+    assert json.loads((P.DATA / 'switches.json').read_text()) == {}
+    (P.DATA / 'switches.json').unlink(missing_ok=True)
+    assert '| `friendly-phone`' not in (ROOT / 'README.md').read_text()
 
 
 def test_reply_switch_and_code_removed():
     """Issue 23: the dropped `reply` switch (issue 19) is gone with its code, and a saved value for it is pruned."""
     owner = {'X-Wizard-Switch': '1', 'Tailscale-User-Login': 'owner@example.com'}
-    (P.DATA / 'switches.json').write_text(json.dumps({'reply': True, 'friendly-phone': False}))
+    (P.DATA / 'switches.json').write_text(json.dumps({'reply': True}))
     ids = [s['id'] for s in json.loads(req('GET', '/api/switches', headers=owner)[1])['switches']]
     assert 'reply' not in ids
     import server as S
     S.prune_switches()
-    assert json.loads((P.DATA / 'switches.json').read_text()) == {'friendly-phone': False}
+    assert json.loads((P.DATA / 'switches.json').read_text()) == {}
     (P.DATA / 'switches.json').unlink(missing_ok=True)
     assert req('GET', '/api/episodes/1/context')[0].status == 404
     assert req('GET', '/api/shows/1/context')[0].status == 404
