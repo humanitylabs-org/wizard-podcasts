@@ -352,6 +352,11 @@ html[data-pc-friendly] .pc-art-xl { width: max(120px, min(72vw, 340px, 34vh, cal
   html[data-pc-friendly] .pc-player .pc-art-xl { margin-top: 0; width: max(120px, min(72vw, 340px, 34vh, calc(100vh - 532px))); }
   html[data-pc-friendly] .pc-speeds { display: grid; grid-template-columns: repeat(8, minmax(0, 1fr)); gap: 2px; padding: 2px 0; }
   html[data-pc-friendly] .pc-speed { min-width: 0; padding: 0; font-size: var(--wz-text-sm, .8125rem); }
+  /* 0.5.7 (kick-back 11 Nov: "doesn't make any change"): on a phone a feed row's show name gets its own line, so it is
+   * no longer squeezed to a few letters beside the date; when and how long sit on the line below. */
+  html[data-pc-friendly] .pc-ep .wz-main small.pc-meta { flex-wrap: wrap; }
+  html[data-pc-friendly] .pc-ep .pc-meta-show { flex: 1 0 100%; }
+  html[data-pc-friendly] .pc-ep .pc-meta-show + .pc-meta-sep { display: none; }
 }
 @media (pointer: coarse) { html[data-pc-friendly] .pc-link { min-height: 44px; } }
 

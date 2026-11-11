@@ -1685,11 +1685,14 @@ def test_friendly_phone_pass():
     assert "posted(ep.published, new Date(), grouped && switchOn('friendly-phone'))" in js
     assert "document.documentElement.toggleAttribute('data-pc-friendly', friendly)" in js
     assert 'html[data-pc-friendly] .pc-speeds { display: grid; grid-template-columns: repeat(8, minmax(0, 1fr));' in css
+    # 0.5.7: on a phone the show name gets its own line in feed rows (the visible part of the switch)
+    assert 'html[data-pc-friendly] .pc-ep .pc-meta-show { flex: 1 0 100%; }' in css
+    assert 'html[data-pc-friendly] .pc-ep .pc-meta-show + .pc-meta-sep { display: none; }' in css
     assert 'calc(100vh - 556px)' in css and '@media (pointer: coarse) { html[data-pc-friendly] .pc-link { min-height: 44px; } }' in css
     gated = css.split('Switch friendly-phone (issue 18')[1].split('*/', 1)[1]
     rules = [l.strip() for l in gated.splitlines() if '{' in l and not l.strip().startswith('@')]
     assert rules and all(r.startswith('html[data-pc-friendly] ') for r in rules), rules
-    assert "W.ready({ name: 'wizard-podcasts', version: '0.5.6' })" in js
+    assert "W.ready({ name: 'wizard-podcasts', version: '0.5.7' })" in js
     node = shutil.which('node')
     if not node:
         import pytest

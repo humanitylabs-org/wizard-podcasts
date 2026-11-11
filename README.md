@@ -25,7 +25,7 @@ device sees the same.
 
 | Switch | What it changes | Issue |
 |---|---|---|
-| `friendly-phone` (Friendlier on a phone) | Feed rows under a day heading show just the time, so the show name fits; the full player fits one phone screen (cover gives way, eight speeds in one row); the Discover hint reads "Search shows or paste a feed"; 44 px show links on touch screens. | #18 |
+| `friendly-phone` (Friendlier on a phone) | On a phone, feed rows give the show name its own line (no longer cut to a few letters) and rows under a day heading show just the time; the full player fits one phone screen (cover gives way, eight speeds in one row); the Discover hint reads "Search shows or paste a feed"; 44 px show links on touch screens. | #18 |
 | `reply` (Reply) | A **Reply** button on an episode page and a Reply row in a show's ⋯ menu open a new, unsent Chats draft with that episode or show attached. Nothing is sent. | #19 |
 
 ## Safety
