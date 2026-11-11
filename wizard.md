@@ -4,7 +4,7 @@ id: wizard-podcasts
 name: Podcasts
 type: service
 category: app
-version: 0.5.8
+version: 0.5.9
 voice_names: [podcasts, podcast, podcast player]
 summary: Your private podcast player. Follow shows, new episodes download on their own, and your place is saved across devices.
 tags: [audio, learning]
@@ -33,7 +33,7 @@ view:
     dist: web
 health: /healthz
 # Feature switches (wizard.app-switches/1, wizard-os docs/APP_SWITCHES.md): the App Manager lists and flips them, so the
-# WizardOS Tracker's Try it works the same in every browser. Off by default.
+# WizardOS Tracker's Try it works the same in every browser. Off by default (none right now).
 switches:
   contract: wizard.app-switches/1
   path: /api/switches

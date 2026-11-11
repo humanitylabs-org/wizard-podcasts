@@ -21,7 +21,7 @@ from podcasts import Problem  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 APP_ID = 'wizard-podcasts'
-VERSION = '0.5.8'
+VERSION = '0.5.9'
 PORT = int(os.environ.get('PORT', '9207'))
 PREFIX = '/' + APP_ID
 STATIC_TYPES = {'.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8',
@@ -37,13 +37,8 @@ DEV_MODE = os.environ.get('PODCASTS_DEV_MODE') == 'loopback-single-owner'  # loc
 
 # wizard.app-switches/1 (wizard-os docs/APP_SWITCHES.md). Off by default; the state lives on the box in
 # DATA/switches.json, so the app's Settings, the Tracker's Try it (through the App Manager) and every device see one state.
-SWITCHES = [
-    {'id': 'friendly-phone', 'name': 'Friendlier on a phone',
-     'description': 'On a phone, feed rows give the show name its own line and show just the time under a day heading; '
-                    'the full player fits one phone screen; the Discover search hint is not cut off; show links are '
-                    'easier to tap.',
-     'default': False, 'issues': ['humanitylabs-org/wizard-podcasts#18']},
-]
+# friendly-phone (issue 18) was approved and is now always on; prune_switches() drops its saved value.
+SWITCHES = []
 _SWITCH_LOCK = threading.Lock()
 
 
@@ -77,7 +72,8 @@ def set_switch(switch_id, on):
 
 
 def prune_switches():
-    """Drop saved values of switches that no longer exist (e.g. `reply`, dropped in issue 19), so no stale state stays."""
+    """Drop saved values of switches that no longer exist (e.g. `reply`, dropped in issue 19, or
+    `friendly-phone`, always on since issue 18), so no stale state stays."""
     ids = {s['id'] for s in SWITCHES}
     with _SWITCH_LOCK:
         saved = _saved_switches()

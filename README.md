@@ -22,9 +22,10 @@ New behaviour lands switched off. The owner turns it on in the gear (Discover) u
 WizardOS Tracker's Try it (`GET/POST /api/switches`, `wizard.app-switches/1`). The state is kept on the Wizard, so every
 device sees the same.
 
-| Switch | What it changes | Issue |
-|---|---|---|
-| `friendly-phone` (Friendlier on a phone) | On a phone, feed rows give the show name its own line (no longer cut to a few letters) and rows under a day heading show just the time; the full player fits one phone screen (cover gives way, eight speeds in one row); the Discover hint reads "Search shows or paste a feed"; 44 px show links on touch screens. | #18 |
+There are no switches right now. `friendly-phone` (Friendlier on a phone, #18) was approved in 0.5.9 and is always on:
+on a phone, feed rows give the show name its own line and rows under a day heading show just the time; the full player
+fits one phone screen (cover gives way, eight speeds in one row); the Discover hint reads "Search shows or paste a
+feed"; 44 px show links on touch screens.
 
 ## Safety
 

@@ -846,7 +846,7 @@ function episodeRow(ep, { showShow = true, grouped = false } = {}) {
   const main = el('span', 'wz-main');
   const meta = el('small', 'pc-meta');
   const bits = [];
-  const when = posted(ep.published, new Date(), grouped && switchOn('friendly-phone'));
+  const when = posted(ep.published, new Date(), grouped);
   if (when) bits.push(when);
   if (ep.duration) bits.push(minutes(ep.duration));
   // the show name gives way first on a narrow row; when and how long always stay whole
@@ -1099,22 +1099,12 @@ function resultRow(item) {
 // device see one state. All off by default; re-read when the page comes back to the front.
 const SW_HEAD = { 'X-Wizard-Switch': '1' };
 let switches = [];
-function switchOn(id) { return !!switches.find(x => x.id === id)?.on; }
-const SEARCH_HINT = { off: 'Search, or paste a feed or @handle', on: 'Search shows or paste a feed' };
-function applySwitches() {
-  // friendly-phone (issue 18): rows under a day heading show just the time, the player fits one phone screen, the
-  // Discover hint is not cut off, 44px show links on touch screens (styles.css scopes its rules to html[data-pc-friendly]).
-  const friendly = switchOn('friendly-phone');
-  document.documentElement.toggleAttribute('data-pc-friendly', friendly);
-  $('search-input').placeholder = friendly ? SEARCH_HINT.on : SEARCH_HINT.off;
-}
 async function loadSwitches() {
   const was = JSON.stringify(switches);
   try {
     const r = await fetch('api/switches', { cache: 'no-store', headers: SW_HEAD });
     if (r.ok) switches = (await r.json()).switches || [];
   } catch (_) { /* keep the last known switches (off by default) */ }
-  applySwitches();
   if (was !== JSON.stringify(switches) && currentView() === 'feed') renderFeed();
 }
 async function setSwitch(id, on) {
@@ -1123,7 +1113,6 @@ async function setSwitch(id, on) {
   try { body = await r.json(); } catch (_) {}
   if (!r.ok) throw new Error(body.error || 'Podcasts could not change that switch.');
   switches = body.switches || switches;
-  applySwitches();
   if (currentView() === 'feed') renderFeed();
 }
 function switchRows() {
@@ -1515,7 +1504,7 @@ $('pl-mark').onclick = async () => {
 if (!W) {
   say('Wizard system functions are unavailable. Open Podcasts through Wizard.', 'error');
 } else {
-  W.ready({ name: 'wizard-podcasts', version: '0.5.8' });
+  W.ready({ name: 'wizard-podcasts', version: '0.5.9' });
   // Domain Back: close the page on top (show, episode, player), then Discover -> My feed; at My feed the core decides.
   W.back.register({ canGoBack: () => state.stack.length > 0 || state.tab !== 'feed', back: () => popView() });
 }
