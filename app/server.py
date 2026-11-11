@@ -21,7 +21,7 @@ from podcasts import Problem  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 APP_ID = 'wizard-podcasts'
-VERSION = '0.5.7'
+VERSION = '0.5.8'
 PORT = int(os.environ.get('PORT', '9207'))
 PREFIX = '/' + APP_ID
 STATIC_TYPES = {'.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8',
@@ -43,10 +43,6 @@ SWITCHES = [
                     'the full player fits one phone screen; the Discover search hint is not cut off; show links are '
                     'easier to tap.',
      'default': False, 'issues': ['humanitylabs-org/wizard-podcasts#18']},
-    {'id': 'reply', 'name': 'Reply',
-     'description': 'A Reply button on an episode page and in a show\'s menu opens a new, unsent Chats draft with that '
-                    'episode or show attached, so you can start a thread with your agent about it. Nothing is sent.',
-     'default': False, 'issues': ['humanitylabs-org/wizard-podcasts#19']},
 ]
 _SWITCH_LOCK = threading.Lock()
 
@@ -78,6 +74,19 @@ def set_switch(switch_id, on):
         tmp.write_text(json.dumps(saved))
         os.replace(tmp, _switch_file())
     return switches_doc()
+
+
+def prune_switches():
+    """Drop saved values of switches that no longer exist (e.g. `reply`, dropped in issue 19), so no stale state stays."""
+    ids = {s['id'] for s in SWITCHES}
+    with _SWITCH_LOCK:
+        saved = _saved_switches()
+        kept = {k: v for k, v in saved.items() if k in ids and isinstance(v, bool)}
+        if kept == saved or not _switch_file().exists():
+            return
+        tmp = _switch_file().with_suffix('.json.tmp')
+        tmp.write_text(json.dumps(kept))
+        os.replace(tmp, _switch_file())
 
 
 def _csv(name):
@@ -219,8 +228,8 @@ def rpc(msg):
 # ------------------------------------------------------------------ HTTP
 
 RANGE = re.compile(r'^bytes=(\d*)-(\d*)$')
-EP_ROUTE = re.compile(r'^/api/episodes/(\d+)(?:/(audio|context|progress|mark|skip|download|delete-download))?$')
-SHOW_ROUTE = re.compile(r'^/api/shows/(\d+)(?:/(art|context|refresh|unsubscribe|skip-all))?$')
+EP_ROUTE = re.compile(r'^/api/episodes/(\d+)(?:/(audio|progress|mark|skip|download|delete-download))?$')
+SHOW_ROUTE = re.compile(r'^/api/shows/(\d+)(?:/(art|refresh|unsubscribe|skip-all))?$')
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -341,20 +350,16 @@ class Handler(BaseHTTPRequestHandler):
                     self.wfile.write(body)
                 return
             m = SHOW_ROUTE.match(path)
-            if m and m.group(2) in (None, 'art', 'context'):
+            if m and m.group(2) in (None, 'art'):
                 sid = int(m.group(1))
-                if m.group(2) == 'context':
-                    return self.send(200, P.show_context(sid))
                 if m.group(2) == 'art':
                     data, ctype = P.art(sid)
                     return self.send(200, data, ctype, cache='private, max-age=86400')
                 qs = self.query()
                 return self.send(200, P.show_detail(sid, int(qs.get('limit', '100')), int(qs.get('offset', '0'))))
             m = EP_ROUTE.match(path)
-            if m and m.group(2) in (None, 'audio', 'context'):
+            if m and m.group(2) in (None, 'audio'):
                 eid = int(m.group(1))
-                if m.group(2) == 'context':
-                    return self.send(200, P.episode_context(eid))
                 if m.group(2) == 'audio':
                     return self.audio(eid)
                 return self.send(200, P.episode(eid))
@@ -590,6 +595,10 @@ def wait_for_data(limit=180):
 def main():
     wait_for_data()
     P.init()
+    try:
+        prune_switches()
+    except OSError:
+        pass  # unwritable data folder: unknown ids are ignored on read anyway
     P.start_workers()
     D.start()
     Server((os.environ.get('BIND', '0.0.0.0'), PORT), Handler).serve_forever()
