@@ -3,6 +3,7 @@
 Stdlib only. The Wizard gateway owns authentication; the direct port stays loopback.
 Requests may arrive with or without the /wizard-podcasts prefix (same-origin gateway path).
 """
+import http.client
 import json
 import os
 import re
@@ -21,7 +22,7 @@ from podcasts import Problem  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 APP_ID = 'wizard-podcasts'
-VERSION = '0.5.9'
+VERSION = '0.5.10'
 PORT = int(os.environ.get('PORT', '9207'))
 PREFIX = '/' + APP_ID
 STATIC_TYPES = {'.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8',
@@ -224,6 +225,8 @@ def rpc(msg):
 # ------------------------------------------------------------------ HTTP
 
 RANGE = re.compile(r'^bytes=(\d*)-(\d*)$')
+CONTENT_RANGE = re.compile(r'^bytes (\d+)-(\d+)/(\d+|\*)$')
+PROXY_RESUMES = 5  # times one streamed response reopens the host after it cuts off early
 EP_ROUTE = re.compile(r'^/api/episodes/(\d+)(?:/(audio|progress|mark|skip|download|delete-download))?$')
 SHOW_ROUTE = re.compile(r'^/api/shows/(\d+)(?:/(art|refresh|unsubscribe|skip-all))?$')
 
@@ -468,14 +471,47 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             if self.command == 'HEAD':
                 return
-            try:
-                while True:
+            # Podcast CDNs drop long streams (idle player buffers, CDN timeouts). When the host cuts off before the
+            # promised length, reopen it at the next byte so the player never sees a short file and stops mid-episode.
+            first, total, whole = 0, int(length) if length and length.isdigit() else None, None
+            m = CONTENT_RANGE.match(up.header('Content-Range') or '')
+            if m:
+                first, whole = int(m.group(1)), m.group(3)
+            elif total is not None:
+                whole = str(total)
+            sent, resumes = 0, 0
+            while True:
+                try:
                     chunk = up.read(256 * 1024)
-                    if not chunk:
-                        break
-                    self.wfile.write(chunk)
-            except (BrokenPipeError, ConnectionResetError, OSError):
-                self.close_connection = True
+                except (OSError, http.client.HTTPException):
+                    chunk = b''
+                if chunk:
+                    try:
+                        self.wfile.write(chunk)
+                    except (BrokenPipeError, ConnectionResetError, OSError):
+                        self.close_connection = True
+                        return
+                    sent += len(chunk)
+                    continue
+                if total is None or sent >= total or resumes >= PROXY_RESUMES:
+                    if total is not None and sent < total:
+                        self.close_connection = True
+                    return
+                resumes += 1
+                up.close()
+                again = dict(headers, Range=f'bytes={first + sent}-{first + total - 1}')
+                try:
+                    up = youtube.open_audio(vid, again) if vid else netfetch.open_url(
+                        row['enclosure_url'], headers=again, timeout=30)
+                except netfetch.FetchError:
+                    self.close_connection = True
+                    return
+                m = CONTENT_RANGE.match(up.header('Content-Range') or '')
+                # Hosts that stitch ads per request can hand back a different file: splicing it would garble the
+                # audio, so only resume the same file (same total size); otherwise end and let the player reopen.
+                if up.status != 206 or not m or int(m.group(1)) != first + sent or (whole and m.group(3) != whole):
+                    self.close_connection = True
+                    return
         finally:
             up.close()
 

@@ -44,6 +44,7 @@ ATOM = b"""<?xml version="1.0"?><feed xmlns="http://www.w3.org/2005/Atom"><title
 <link rel="enclosure" href="https://cdn.example.com/a1.m4a" type="audio/mp4" length="10"/><summary>s</summary></entry></feed>"""
 
 AUDIO = bytes(range(256)) * 12  # 3072 bytes
+CUT = {}  # url -> how many more audio responses end after 1000 bytes (a host dropping the stream)
 
 
 class FakeResp:
@@ -96,9 +97,14 @@ def fake_open(url, headers=None, timeout=20, method='GET', allow=None):
         if rng:
             a, b = rng[6:].split('-')
             a, b = int(a), int(b or len(AUDIO) - 1)
-            return FakeResp(206, AUDIO[a:b + 1], {'Content-Type': 'audio/mpeg', 'Content-Length': str(b - a + 1),
-                                                   'Content-Range': f'bytes {a}-{b}/{len(AUDIO)}'}, url)
-        return FakeResp(200, AUDIO, {'Content-Type': 'audio/mpeg', 'Content-Length': str(len(AUDIO))}, url)
+            r = FakeResp(206, AUDIO[a:b + 1], {'Content-Type': 'audio/mpeg', 'Content-Length': str(b - a + 1),
+                                                'Content-Range': f'bytes {a}-{b}/{len(AUDIO)}'}, url)
+        else:
+            r = FakeResp(200, AUDIO, {'Content-Type': 'audio/mpeg', 'Content-Length': str(len(AUDIO))}, url)
+        if CUT.get(url, 0) > 0:
+            CUT[url] -= 1
+            r._body = r._body[:1000]
+        return r
     if url.endswith('art.jpg'):
         return FakeResp(200, b'\xff\xd8jpeg', {'Content-Type': 'image/jpeg'}, url)
     return FakeResp(404, b'', {}, url)
@@ -401,6 +407,14 @@ def test_subscribe_download_range_progress_mark_mcp():
     assert other['download']['state'] == 'none'
     r, data = req('GET', f'/api/episodes/{other["id"]}/audio', headers={'Range': 'bytes=10-19'})
     assert r.status == 206 and data == AUDIO[10:20]
+    # a host that drops the stream early is reopened at the next byte, so playback never stops mid-episode
+    enc = json.loads(req('GET', f'/api/episodes/{other["id"]}')[1])['enclosure_url']
+    CUT[enc] = 2
+    r, data = req('GET', f'/api/episodes/{other["id"]}/audio')
+    assert r.status == 200 and data == AUDIO and CUT[enc] == 0
+    CUT[enc] = 1
+    r, data = req('GET', f'/api/episodes/{other["id"]}/audio', headers={'Range': 'bytes=500-'})
+    assert r.status == 206 and data == AUDIO[500:] and CUT[enc] == 0
     # progress is saved server-side and shows in Continue + now_playing
     r, body = req('POST', f'/api/episodes/{eid}/progress', {'position': 61.5, 'duration': 3723})
     assert r.status == 200 and json.loads(body)['position'] == 61.5
@@ -1632,7 +1646,7 @@ def test_view_053_clear_play_errors_youtube_hint_and_exact_name_first():
     js = (ROOT / 'web/app.js').read_text()
     # a failed source shows the app's own reason (YouTube Music missing), never the browser's 'no supported source'
     assert "function playFailed(e) { if (e.name !== 'AbortError' && e.name !== 'NotSupportedError')" in js
-    assert js.count('p.catch(playFailed)') == 2 and "headers: { Range: 'bytes=0-0' }" in js
+    assert js.count('p.catch(playFailed)') == 3 and "headers: { Range: 'bytes=0-0' }" in js
     assert "Could not start playback: ' + e.message, 'error'); });" not in js
     # following a YouTube channel without YouTube Music says so at once (search results and Discover cards)
     assert js.count('youtubeHint(r.show)') == 2 and "!st.youtube.installed" in js
@@ -1689,7 +1703,7 @@ def test_friendly_phone_pass():
     assert '  .pc-ep .pc-meta-show { flex: 1 0 100%; }' in css
     assert '  .pc-ep .pc-meta-show + .pc-meta-sep { display: none; }' in css
     assert 'calc(100vh - 556px)' in css and '@media (pointer: coarse) { .pc-link { min-height: 44px; } }' in css
-    assert "W.ready({ name: 'wizard-podcasts', version: '0.5.9' })" in js
+    assert "W.ready({ name: 'wizard-podcasts', version: '0.5.10' })" in js
     node = shutil.which('node')
     if not node:
         import pytest
@@ -1782,3 +1796,13 @@ def test_reply_switch_and_code_removed():
     assert 'openContextDraft' not in js and "switchOn('reply')" not in js
     assert 'ep-reply' not in (ROOT / 'web/index.html').read_text()
     assert '`reply`' not in (ROOT / 'README.md').read_text() and '/context' not in (ROOT / 'API.md').read_text()
+
+
+# ------------------------------------------------------------------ 0.5.10: playback survives a dropped stream
+
+
+def test_view_0510_dropped_stream_resumes_at_same_second():
+    js = (ROOT / 'web/app.js').read_text()
+    # a mid-episode network error or 20 s stuck buffering reopens the source at the same second (3 tries a minute)
+    assert 'function reviveStream()' in js and 'state.pendingSeek = at;' in js and 'revive.tries.length >= 3' in js
+    assert "audio.error.code !== 4 && reviveStream()" in js and "addEventListener('waiting'" in js

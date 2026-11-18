@@ -1425,9 +1425,36 @@ audio.addEventListener('ended', async () => {
 // A source that fails says why in plain words: the app's own answer (e.g. 'YouTube episodes need the YouTube Music
 // app') when it has one, never the browser's 'no supported source'. The audio error event owns that message.
 function playFailed(e) { if (e.name !== 'AbortError' && e.name !== 'NotSupportedError') say('Could not start playback: ' + e.message, 'error'); }
+// A stream that breaks mid-episode (network blip, host cut-off, stuck buffering) reopens at the same second and keeps
+// playing instead of stopping. Three tries per minute; after that the error below explains.
+const revive = { tries: [], timer: null, lastTime: 0 };
+function reviveStream() {
+  const ep = state.current, src = audio.getAttribute('src');
+  if (!ep || !src || !state.touched) return false;
+  const at = audio.currentTime || revive.lastTime;
+  const dur = duration();
+  if (!(at > 0) || (dur && at > dur - 2)) return false;
+  const now = Date.now();
+  revive.tries = revive.tries.filter(t => now - t < 60000);
+  if (revive.tries.length >= 3) return false;
+  revive.tries.push(now);
+  state.pendingSeek = at;
+  audio.src = src;  // same URL: the browser opens a fresh connection
+  audio.playbackRate = state.settings.speed;
+  const p = audio.play(); if (p) p.catch(playFailed);
+  return true;
+}
+function clearStallWatch() { if (revive.timer) { clearTimeout(revive.timer); revive.timer = null; } }
+audio.addEventListener('timeupdate', () => { if (audio.currentTime > 0) revive.lastTime = audio.currentTime; });
+audio.addEventListener('waiting', () => {
+  clearStallWatch();
+  revive.timer = setTimeout(() => { revive.timer = null; if (!audio.paused && audio.readyState < 3) reviveStream(); }, 20000);
+});
+for (const ev of ['playing', 'pause', 'seeking', 'emptied']) audio.addEventListener(ev, clearStallWatch);
 audio.addEventListener('error', async () => {
   const src = audio.getAttribute('src');
   if (!state.current || !src) return;
+  if (!state.current.preview && audio.error && audio.error.code !== 4 && reviveStream()) return;
   let why = state.current.preview ? 'This preview could not be played.' : 'This episode could not be played. Try downloading it first.';
   try {
     const r = await fetch(src, { headers: { Range: 'bytes=0-0' } });
@@ -1504,7 +1531,7 @@ $('pl-mark').onclick = async () => {
 if (!W) {
   say('Wizard system functions are unavailable. Open Podcasts through Wizard.', 'error');
 } else {
-  W.ready({ name: 'wizard-podcasts', version: '0.5.9' });
+  W.ready({ name: 'wizard-podcasts', version: '0.5.10' });
   // Domain Back: close the page on top (show, episode, player), then Discover -> My feed; at My feed the core decides.
   W.back.register({ canGoBack: () => state.stack.length > 0 || state.tab !== 'feed', back: () => popView() });
 }
