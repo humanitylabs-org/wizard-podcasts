@@ -1703,7 +1703,7 @@ def test_friendly_phone_pass():
     assert '  .pc-ep .pc-meta-show { flex: 1 0 100%; }' in css
     assert '  .pc-ep .pc-meta-show + .pc-meta-sep { display: none; }' in css
     assert 'calc(100vh - 556px)' in css and '@media (pointer: coarse) { .pc-link { min-height: 44px; } }' in css
-    assert "W.ready({ name: 'wizard-podcasts', version: '0.5.11' })" in js
+    assert "W.ready({ name: 'wizard-podcasts', version: '0.5.12' })" in js
     node = shutil.which('node')
     if not node:
         import pytest

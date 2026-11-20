@@ -1712,7 +1712,7 @@ $('pl-video').onclick = () => { if (vid.on) stopVideo(true); else startVideo(); 
 if (!W) {
   say('Wizard system functions are unavailable. Open Podcasts through Wizard.', 'error');
 } else {
-  W.ready({ name: 'wizard-podcasts', version: '0.5.11' });
+  W.ready({ name: 'wizard-podcasts', version: '0.5.12' });
   // Domain Back: close the page on top (show, episode, player), then Discover -> My feed; at My feed the core decides.
   W.back.register({ canGoBack: () => state.stack.length > 0 || state.tab !== 'feed', back: () => popView() });
 }
