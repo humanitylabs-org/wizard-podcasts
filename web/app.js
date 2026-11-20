@@ -11,6 +11,9 @@ const W = window.WizardApp && window.WizardApp.version === 1 ? window.WizardApp 
 const audio = $('audio');
 const SPEEDS = [0.8, 1, 1.2, 1.5, 1.75, 2, 2.5, 3];
 const PAGE = 100;
+// episode-media (issue 27): the video shown in Now playing instead of the cover, and whose notes it shows
+const vid = { on: false, el: null, t: 0, ep: null, playing: false, saved: 0, heard: false };
+let plNotesFor = null;
 
 const state = {
   tab: 'feed',            // the root the nav bar shows: 'feed' | 'discover'
@@ -269,6 +272,7 @@ new ResizeObserver(() => {
 function paint() {
   const v = currentView();
   for (const name of VIEWS) $('view-' + name).hidden = name !== v;
+  if (v !== 'player' && vid.on) stopVideo(vid.playing);  // leaving Now playing: the episode carries on as audio
   const app = document.querySelector('.pc-app');
   app.dataset.view = v;
   $('backrow').hidden = !state.stack.length;
@@ -842,7 +846,7 @@ function episodeRow(ep, { showShow = true, grouped = false } = {}) {
   const open = el('button', 'wz-row pc-ep-open');
   open.type = 'button';
   const img = el('img', 'pc-art pc-art-row'); img.alt = ''; img.loading = 'lazy';
-  art(img, ep.artwork);
+  epArt(img, ep);
   const main = el('span', 'wz-main');
   const meta = el('small', 'pc-meta');
   const bits = [];
@@ -960,7 +964,7 @@ $('show-actions').onclick = () => state.show && showSheet(state.show);
 let epPoll = 0;
 function renderEpisode(ep) {
   state.episode = ep;
-  art($('ep-art'), ep.artwork);
+  epArt($('ep-art'), ep);
   $('ep-show').textContent = ep.show_title || '';
   $('ep-show').onclick = () => openView('show', ep.show_id);
   $('ep-title').textContent = ep.title;
@@ -1105,7 +1109,17 @@ async function loadSwitches() {
     const r = await fetch('api/switches', { cache: 'no-store', headers: SW_HEAD });
     if (r.ok) switches = (await r.json()).switches || [];
   } catch (_) { /* keep the last known switches (off by default) */ }
-  if (was !== JSON.stringify(switches) && currentView() === 'feed') renderFeed();
+  if (was !== JSON.stringify(switches)) applySwitches();
+}
+function switchOn(id) { return !!switches.find(s => s.id === id && s.on); }
+function applySwitches() {
+  document.documentElement.toggleAttribute('data-pc-media', mediaOn());
+  if (!mediaOn()) stopVideo(false);
+  plNotesFor = null;
+  const v = currentView();
+  if (v === 'feed') renderFeed();
+  if (v === 'episode' && state.episode) renderEpisode(state.episode);
+  if (state.current) { paintPlayer(); mediaSession(state.current); }
 }
 async function setSwitch(id, on) {
   const r = await fetch('api/switches', { method: 'POST', headers: { ...SW_HEAD, 'Content-Type': 'application/json' }, body: JSON.stringify({ id, on }) });
@@ -1113,7 +1127,7 @@ async function setSwitch(id, on) {
   try { body = await r.json(); } catch (_) {}
   if (!r.ok) throw new Error(body.error || 'Podcasts could not change that switch.');
   switches = body.switches || switches;
-  if (currentView() === 'feed') renderFeed();
+  applySwitches();
 }
 function switchRows() {
   return switches.map(s => {
@@ -1214,6 +1228,7 @@ function loadIntoPlayer(ep, autoplay) {
   }
 }
 function playEpisode(ep) {
+  stopVideo(false);
   try { localStorage.removeItem(MINI_KEY); } catch (_) {}
   if (state.current && state.current.id !== ep.id) saveProgress(true);  // reads the old place synchronously
   // Start inside the tap (mobile browsers need it), then catch up with a newer place saved on another device.
@@ -1229,6 +1244,7 @@ function markCurrentRow() {
 }
 function togglePlay() {
   if (!state.current) return;
+  stopVideo(false);  // play/pause in the app while the video shows: back to audio at the video's second
   if (audio.paused) {
     // Start inside the tap (mobile browsers need it), then catch up with a newer place saved on another device.
     const p = audio.play(); if (p) p.catch(playFailed);
@@ -1260,6 +1276,7 @@ function miniClosed(np) {
 async function closePlayer() {
   const ep = state.current;
   if (!ep) return;
+  stopVideo(false);
   const save = ep.preview ? null : saveProgress(true);  // reads the place synchronously, before the audio is unloaded
   audio.pause();
   unloadPlayer();
@@ -1270,6 +1287,7 @@ async function closePlayer() {
   if (currentView() === 'feed') loadFeed().catch(() => {});
 }
 function unloadPlayer() {
+  stopVideo(false);
   audio.pause();
   audio.removeAttribute('src'); audio.load();
   state.current = null;
@@ -1278,6 +1296,7 @@ function unloadPlayer() {
 }
 function skip(sec) {
   if (!state.current) return;
+  stopVideo(false);
   const dur = isFinite(audio.duration) ? audio.duration : state.current.duration || Infinity;
   audio.currentTime = Math.max(0, Math.min(dur - 1, audio.currentTime + sec));
   saveProgress(true);
@@ -1286,7 +1305,7 @@ function duration() { return isFinite(audio.duration) && audio.duration > 0 ? au
 function paintPlayer() {
   const ep = state.current;
   if (!ep) return;
-  const pos = audio.readyState ? audio.currentTime : state.pendingSeek || ep.position || 0;
+  const pos = vid.on ? vid.t : audio.readyState ? audio.currentTime : state.pendingSeek || ep.position || 0;
   const dur = duration();
   const playing = !audio.paused;
   setText($('mini-title'), ep.title);
@@ -1294,14 +1313,16 @@ function paintPlayer() {
   const left = dur ? minutes(dur - pos) + ' left' : '';
   setText($('mini-left'), left ? ' · ' + left : '');
   setText($('mini-time'), left);
-  art($('mini-art'), ep.artwork);
+  epArt($('mini-art'), ep);
   $('mini-progress').style.width = dur ? Math.min(100, 100 * pos / dur) + '%' : '0';
   // The play/pause icon is swapped only when the state changes: replacing it on every timeupdate (4x a second) pulled
   // the node out from under a finger mid-tap, so the tap was lost (0.4.0).
   setIcon($('mini-toggle'), playing ? 'pause' : 'play');
   $('mini-toggle').setAttribute('aria-label', playing ? 'Pause' : 'Play');
   if (currentView() === 'player') {
-    art($('pl-art'), ep.artwork);
+    if (!vid.on) epArt($('pl-art'), ep);
+    paintVideoButton();
+    if (plNotesFor !== ep.id) paintPlayerNotes();
     $('pl-title').textContent = ep.title;
     $('pl-show').textContent = ep.show_title || '';
     $('pl-date').textContent = [postedFull(ep.published), ep.duration ? minutes(ep.duration) : ''].filter(Boolean).join(' · ');
@@ -1367,10 +1388,11 @@ async function saveProgress(force, completed = false) {
 }
 function beaconProgress() {
   const ep = state.current;
-  if (!ep || ep.preview || !state.touched || !audio.readyState) return;
+  if (!ep || ep.preview || !state.touched || (!audio.readyState && !vid.on)) return;
   // keepalive lets the save finish while the page is being hidden or closed.
-  const body = JSON.stringify({ position: Math.floor(audio.currentTime), duration: duration() || undefined });
-  state.savedPos = audio.currentTime;
+  const at = vid.on ? vid.t : audio.currentTime;
+  const body = JSON.stringify({ position: Math.floor(at), duration: duration() || undefined });
+  state.savedPos = at;
   try { fetch('api/episodes/' + ep.id + '/progress', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body, keepalive: true }).catch(() => {}); }
   catch (_) { saveProgress(true); }
 }
@@ -1378,7 +1400,8 @@ function mediaSession(ep) {
   if (!('mediaSession' in navigator)) return;
   try {
     navigator.mediaSession.metadata = new MediaMetadata({ title: ep.title, artist: ep.show_title || '', album: 'Podcasts',
-      artwork: ep.artwork ? [{ src: new URL(ep.artwork, location.href).href, sizes: '600x600' }] : [] });
+      artwork: mediaOn() && ep.episode_art ? [{ src: new URL(ep.episode_art, location.href).href }]
+        : ep.artwork ? [{ src: new URL(ep.artwork, location.href).href, sizes: '600x600' }] : [] });
     navigator.mediaSession.setActionHandler('play', () => audio.play());
     navigator.mediaSession.setActionHandler('pause', () => audio.pause());
     navigator.mediaSession.setActionHandler('seekbackward', () => skip(-state.settings.skip_back));
@@ -1507,7 +1530,7 @@ $('pl-toggle').onclick = togglePlay;
 $('pl-back').onclick = () => skip(-state.settings.skip_back);
 $('pl-fwd').onclick = () => skip(state.settings.skip_forward);
 $('pl-seek').addEventListener('input', () => { $('pl-pos').textContent = clock(+$('pl-seek').value); });
-$('pl-seek').addEventListener('change', () => { audio.currentTime = +$('pl-seek').value; saveProgress(true); });
+$('pl-seek').addEventListener('change', () => { stopVideo(false); audio.currentTime = +$('pl-seek').value; saveProgress(true); });
 $('pl-show').onclick = () => state.current && !state.current.preview && openView('show', state.current.show_id);
 $('pl-title').onclick = () => state.current && !state.current.preview && openView('episode', state.current.id);
 $('pl-mark').onclick = async () => {
@@ -1527,18 +1550,145 @@ $('pl-mark').onclick = async () => {
   } catch (e) { say(e.message, 'error'); }
 };
 
+// ------------------------------------------------------------------ episode pictures, notes and video (issue 27)
+// Behind the owner switch episode-media (off by default): each episode draws its own picture (api/episodes/<id>/art,
+// the show art when it has none; YouTube thumbnails stay 16:9 in Now playing and on the episode page), Now playing
+// shows the full notes under the controls, and episodes with a video get a Video button that swaps the cover for the
+// video at the current second and hands the second back to the audio when it is turned off, so the place still saves.
+function mediaOn() { return switchOn('episode-media'); }
+function epArt(img, ep) {
+  const own = mediaOn() && ep.episode_art && ep.episode_art !== ep.artwork;
+  img.classList.toggle('pc-wide', !!(own && ep.episode_art_wide));
+  img.onerror = own ? () => { img.onerror = null; img.classList.remove('pc-wide'); art(img, ep.artwork); } : null;
+  art(img, own ? ep.episode_art : ep.artwork);
+}
+async function paintPlayerNotes() {
+  const ep = state.current, box = $('pl-notes');
+  plNotesFor = ep ? ep.id : null;
+  if (!ep || ep.preview || !mediaOn()) { box.hidden = true; box.replaceChildren(); return; }
+  if (ep.notes_html === undefined) {
+    try { const e = await api('api/episodes/' + ep.id); ep.notes_html = e.notes_html || ''; if (!ep.video) ep.video = e.video; } catch (_) { return; }
+    if (state.current?.id !== ep.id || plNotesFor !== ep.id) return;
+  }
+  renderNotes(box, ep.notes_html);
+  box.hidden = !box.childNodes.length;
+}
+const YT_ORIGIN = 'https://www.youtube-nocookie.com';
+function videoOf(ep) { return mediaOn() && ep && !ep.preview && ep.video && ['youtube', 'file'].includes(ep.video.kind) ? ep.video : null; }
+function paintVideoButton() {
+  const b = $('pl-video');
+  b.hidden = !videoOf(state.current);
+  b.setAttribute('aria-pressed', String(vid.on));
+  setText(b, vid.on ? 'Audio only' : 'Video');
+}
+function videoTick(t, playing) {
+  if (!vid.on || !(t >= 0)) return;
+  vid.t = t;
+  if (playing !== undefined) vid.playing = playing;
+  if (vid.playing) state.touched = true;
+  paintPlayer();
+  if (Date.now() - vid.saved > 10000) videoSave();
+}
+async function videoSave() {
+  const ep = state.current;
+  if (!vid.on || !ep || ep.id !== vid.ep || !state.touched) return;
+  vid.saved = Date.now();
+  const pos = Math.floor(vid.t * 10) / 10;
+  state.savedPos = pos;
+  try { const e = await api('api/episodes/' + ep.id + '/progress', { position: pos, duration: duration() || undefined }); state.savedAt = Math.max(state.savedAt || 0, e.position_at); }
+  catch (_) { /* the next tick retries */ }
+}
+function startVideo() {
+  const ep = state.current, v = videoOf(ep);
+  if (!v || vid.on) return;
+  const at = audio.readyState ? audio.currentTime : state.pendingSeek || ep.position || 0;
+  Object.assign(vid, { on: true, t: at, ep: ep.id, playing: true, saved: Date.now() });
+  audio.pause();
+  let node;
+  if (v.kind === 'youtube') {
+    // The privacy-enhanced embed; its player reports the second over postMessage (no YouTube script on this page).
+    node = document.createElement('iframe');
+    node.src = YT_ORIGIN + '/embed/' + encodeURIComponent(v.id) + '?autoplay=1&playsinline=1&rel=0&enablejsapi=1&start=' + Math.floor(at)
+      + '&origin=' + encodeURIComponent(location.origin);
+    node.allow = 'autoplay; encrypted-media; picture-in-picture; fullscreen';
+    node.allowFullscreen = true;
+    node.referrerPolicy = 'strict-origin-when-cross-origin';  // the embed refuses to play without its page's origin
+    node.title = 'Video: ' + ep.title;
+    let tries = 0;
+    const listen = () => {
+      if (!vid.on || vid.el !== node || vid.heard || tries++ > 20) return;
+      try { node.contentWindow.postMessage(JSON.stringify({ event: 'listening', id: 1, channel: 'widget' }), YT_ORIGIN); } catch (_) {}
+      setTimeout(listen, 500);
+    };
+    vid.heard = false;
+    node.addEventListener('load', listen);
+  } else {
+    node = document.createElement('video');
+    node.controls = true; node.playsInline = true; node.preload = 'metadata'; node.src = v.src;
+    node.addEventListener('loadedmetadata', () => {
+      if (vid.t > 0) node.currentTime = vid.t;
+      node.playbackRate = state.settings.speed;
+      const p = node.play(); if (p) p.catch(() => {});
+    }, { once: true });
+    node.addEventListener('timeupdate', () => videoTick(node.currentTime, !node.paused));
+    node.addEventListener('pause', () => { videoTick(node.currentTime, false); videoSave(); });
+  }
+  node.className = 'pc-art pc-art-xl pc-wide pc-plframe';
+  vid.el = node;
+  $('pl-art').hidden = true;
+  $('pl-media').append(node);
+  paintVideoButton();
+}
+function stopVideo(resume) {
+  if (!vid.on) return;
+  const t = vid.t, id = vid.ep;
+  vid.on = false; vid.playing = false;
+  if (vid.el) { vid.el.remove(); vid.el = null; }
+  const ep = state.current;
+  if (ep && ep.id === id) {
+    if (audio.readyState) audio.currentTime = t; else state.pendingSeek = t;
+    state.savedPos = -1;
+    epArt($('pl-art'), ep);
+    if (resume) { const p = audio.play(); if (p) p.catch(playFailed); }
+    else if (state.touched) { ep.position = t; videoSaveAt(ep, t); }
+  }
+  paintPlayer();
+  if (currentView() === 'player') paintVideoButton();
+}
+function videoSaveAt(ep, t) {
+  api('api/episodes/' + ep.id + '/progress', { position: Math.floor(t * 10) / 10, duration: duration() || undefined })
+    .then(e => { state.savedAt = Math.max(state.savedAt || 0, e.position_at); state.savedPos = e.position; }).catch(() => {});
+}
+window.addEventListener('message', e => {
+  if (e.origin !== YT_ORIGIN || !vid.on || !vid.el || e.source !== vid.el.contentWindow) return;
+  let d;
+  try { d = typeof e.data === 'string' ? JSON.parse(e.data) : e.data; } catch (_) { return; }
+  if (!d || typeof d !== 'object') return;
+  vid.heard = true;
+  if (d.event === 'onReady' && state.settings.speed !== 1) {
+    try { vid.el.contentWindow.postMessage(JSON.stringify({ event: 'command', func: 'setPlaybackRate', args: [state.settings.speed], id: 1, channel: 'widget' }), YT_ORIGIN); } catch (_) {}
+  }
+  const info = d.event === 'infoDelivery' && d.info && typeof d.info === 'object' ? d.info : null;
+  if (!info) return;
+  const playing = typeof info.playerState === 'number' ? info.playerState === 1 : undefined;
+  if (typeof info.currentTime === 'number') videoTick(info.currentTime, playing);
+  else if (playing !== undefined) vid.playing = playing;
+  if (playing === false) videoSave();
+});
+$('pl-video').onclick = () => { if (vid.on) stopVideo(true); else startVideo(); };
+
 // ------------------------------------------------------------------ platform
 if (!W) {
   say('Wizard system functions are unavailable. Open Podcasts through Wizard.', 'error');
 } else {
-  W.ready({ name: 'wizard-podcasts', version: '0.5.10' });
+  W.ready({ name: 'wizard-podcasts', version: '0.5.11' });
   // Domain Back: close the page on top (show, episode, player), then Discover -> My feed; at My feed the core decides.
   W.back.register({ canGoBack: () => state.stack.length > 0 || state.tab !== 'feed', back: () => popView() });
 }
 document.addEventListener('visibilitychange', async () => {
   if (document.hidden) { beaconProgress(); return; }
   // Back in front: pick up position changes made on another device while paused here.
-  if (state.current && audio.paused) { await syncFromServer(); paintPlayer(); }
+  if (state.current && audio.paused && !vid.on) { await syncFromServer(); paintPlayer(); }
   if (currentView() !== 'discover') reload();
   loadSwitches();
 });

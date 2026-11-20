@@ -4,6 +4,7 @@ Data lives under DATA_DIR (app data, never the owner's media folder):
   podcasts.sqlite3          shows, episodes, positions, settings
   episodes/<show>/<ep>.ext  downloaded audio (paths are stored relative to DATA_DIR)
   art/<show>.img            cached show artwork
+  art/ep/<ep>.img           cached episode artwork (the episode's own image or YouTube thumbnail, fetched on first view)
 """
 from __future__ import annotations
 
@@ -28,6 +29,9 @@ DATA = Path(os.environ.get('DATA_DIR', Path(__file__).resolve().parent.parent / 
 DB_PATH = DATA / 'podcasts.sqlite3'
 EPISODES_DIR = DATA / 'episodes'
 ART_DIR = DATA / 'art'
+EP_ART_DIR = ART_DIR / 'ep'
+EP_ART_RETRY_SECONDS = 24 * 3600  # an episode whose own image could not be fetched falls back to the show art for a day
+YT_GUID = re.compile(r'^yt:([A-Za-z0-9_-]{11})$')
 MB = 1024 * 1024
 # Long-running shows (e.g. 800+ episodes with full show notes) publish 30+ MB feeds.
 # Feeds are parsed as a stream (feeds.FeedParser), so this caps transfer, not memory.
@@ -132,6 +136,7 @@ def init():
     DATA.mkdir(parents=True, exist_ok=True)
     EPISODES_DIR.mkdir(exist_ok=True)
     ART_DIR.mkdir(exist_ok=True)
+    EP_ART_DIR.mkdir(exist_ok=True)
     c = connect()
     try:
         c.executescript(SCHEMA)
@@ -233,6 +238,16 @@ def episode_dict(r, detail=False):
                       'error': r['download_error'] or None},
          'file': r['file'] or None, 'audio': f'api/episodes/{r["id"]}/audio',
          'artwork': f'api/shows/{r["show_id"]}/art' if ('art_file' in r.keys() and r['art_file']) else ''}
+    # Issue 27 (switch episode-media): the episode's own picture (falls back to the show art on the server) and its
+    # video when there is one. The page uses these only while the switch is on.
+    keys = r.keys()
+    vid = _youtube_id(r['guid']) if 'guid' in keys else ''
+    has_own = vid or ('image_url' in keys and r['image_url'])
+    d['episode_art'] = f'api/episodes/{r["id"]}/art' if has_own else d['artwork']
+    d['episode_art_wide'] = bool(vid)
+    mime = (r['mime'] if 'mime' in keys else '') or ''
+    d['video'] = ({'kind': 'youtube', 'id': vid} if vid else
+                  {'kind': 'file', 'src': d['audio']} if mime.lower().startswith('video/') else None)
     if detail:
         d.update({
             'enclosure_url': r['enclosure_url'], 'mime': r['mime'], 'link': r['link'],
@@ -455,9 +470,11 @@ def _apply_feed(c, sid, parsed, r, first):
         if cur.rowcount:
             new_ids.append(cur.lastrowid)
         else:
-            c.execute('UPDATE episodes SET title=?, published=?, duration=CASE WHEN ?>0 THEN ? ELSE duration END, enclosure_url=?, mime=?, length=?, notes=?, link=?, transcript_url=? '
-                      'WHERE show_id=? AND guid=?',
-                      (e['title'], e['published'], e['duration'], e['duration'], e['url'], e['mime'], e['length'], e['notes'], e['link'], e['transcript_url'], sid, e['guid']))
+            # image_url: backfills episodes stored before their own picture was used (issue 27); a feed that drops it keeps the old one
+            c.execute('UPDATE episodes SET title=?, published=?, duration=CASE WHEN ?>0 THEN ? ELSE duration END, enclosure_url=?, mime=?, length=?, notes=?, link=?, transcript_url=?, '
+                      "image_url=CASE WHEN ?<>'' THEN ? ELSE image_url END WHERE show_id=? AND guid=?",
+                      (e['title'], e['published'], e['duration'], e['duration'], e['url'], e['mime'], e['length'], e['notes'], e['link'], e['transcript_url'],
+                       e['image'], e['image'], sid, e['guid']))
     # First fetch: only the newest episode goes to Up next (and downloads); older ones are the back catalogue.
     inbox_ids = new_ids[:1] if first else new_ids
     for eid in inbox_ids:
@@ -540,6 +557,78 @@ def art(sid):
     return path.read_bytes(), (t.read_text() if t.is_file() else 'image/jpeg')
 
 
+def _youtube_id(guid):
+    m = YT_GUID.match(guid or '')
+    return m.group(1) if m else ''
+
+
+def _fetch_image(url, youtube_only):
+    """-> (bytes, content type) or None. YouTube pictures only from YouTube's image hosts."""
+    try:
+        r = netfetch.open_url(url, timeout=20, allow=youtube.host_allowed) if youtube_only else netfetch.open_url(url, timeout=20)
+        try:
+            ctype = (r.header('Content-Type') or '').split(';')[0].strip().lower()
+            if r.status != 200 or ctype not in ('image/jpeg', 'image/png', 'image/webp', 'image/gif'):
+                return None
+            return r.read_capped(MAX_ART_BYTES, 'artwork'), ctype
+        finally:
+            r.close()
+    except FetchError:
+        return None
+
+
+_ep_art_locks = {}
+_ep_art_guard = threading.Lock()
+
+
+def _ep_art_lock(eid):
+    # one fetch per episode at a time; different episodes fetch side by side
+    with _ep_art_guard:
+        if len(_ep_art_locks) > 512:
+            _ep_art_locks.clear()
+        return _ep_art_locks.setdefault(eid, threading.Lock())
+
+
+def episode_art(eid):
+    """The episode's own picture (issue 27): its feed image, or for a YouTube video the 16:9 thumbnail
+    (maxresdefault, else hqdefault). Fetched once and cached under art/ep/; the show artwork when there is none."""
+    r = q('SELECT e.id, e.show_id, e.guid, e.image_url, s.feed_url FROM episodes e JOIN shows s ON s.id=e.show_id WHERE e.id=?', (eid,), one=True)
+    if not r:
+        raise Problem(404, 'Episode not found.')
+    path, tfile, none = EP_ART_DIR / f'{eid}.img', EP_ART_DIR / f'{eid}.type', EP_ART_DIR / f'{eid}.none'
+    vid = _youtube_id(r['guid'])
+    with _ep_art_lock(eid):
+        if not path.is_file() and not (none.is_file() and time.time() - none.stat().st_mtime < EP_ART_RETRY_SECONDS):
+            urls = []
+            if vid:
+                urls = [f'https://i.ytimg.com/vi/{vid}/maxresdefault.jpg', f'https://i.ytimg.com/vi/{vid}/hqdefault.jpg']
+            if r['image_url'] and r['image_url'] not in urls:
+                urls.append(r['image_url'])
+            got = None
+            for url in urls:
+                got = _fetch_image(url, bool(vid) or youtube.is_feed(r['feed_url']))
+                if got:
+                    break
+            EP_ART_DIR.mkdir(parents=True, exist_ok=True)
+            if got:
+                tmp = EP_ART_DIR / f'.{eid}.tmp'
+                tmp.write_bytes(got[0])
+                os.replace(tmp, path)
+                tfile.write_text(got[1])
+                none.unlink(missing_ok=True)
+            else:
+                none.write_text('')
+        if path.is_file():
+            return path.read_bytes(), (tfile.read_text() if tfile.is_file() else 'image/jpeg')
+    return art(r['show_id'])
+
+
+def _drop_episode_art(ids):
+    for eid in ids:
+        for ext in ('img', 'type', 'none'):
+            (EP_ART_DIR / f'{eid}.{ext}').unlink(missing_ok=True)
+
+
 def unsubscribe(sid, undo=False):
     """Stop following a show. Unless this only undoes a follow made a moment ago (undo=true: Discover's Follow toggle
     or a toast's Undo), it is remembered as a mild 'less like this' for Discover."""
@@ -554,7 +643,9 @@ def unsubscribe(sid, undo=False):
                       'title=excluded.title, genres=excluded.genres, itunes_id=excluded.itunes_id, at=excluded.at',
                       (row['feed_url'], row['title'], m['genres'] if m else '[]', m['itunes_id'] if m else 0, now()))
         c.execute('DELETE FROM shows WHERE id=?', (sid,))
+    ep_ids = [x['id'] for x in q('SELECT id FROM episodes WHERE show_id=?', (sid,))]
     write(go)
+    _drop_episode_art(ep_ids)
     shutil.rmtree(EPISODES_DIR / str(sid), ignore_errors=True)
     for name in (f'{sid}.img', f'{sid}.type'):
         (ART_DIR / name).unlink(missing_ok=True)
