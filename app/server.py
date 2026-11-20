@@ -22,7 +22,7 @@ from podcasts import Problem  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 APP_ID = 'wizard-podcasts'
-VERSION = '0.5.10'
+VERSION = '0.5.11'
 PORT = int(os.environ.get('PORT', '9207'))
 PREFIX = '/' + APP_ID
 STATIC_TYPES = {'.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8',
@@ -39,7 +39,12 @@ DEV_MODE = os.environ.get('PODCASTS_DEV_MODE') == 'loopback-single-owner'  # loc
 # wizard.app-switches/1 (wizard-os docs/APP_SWITCHES.md). Off by default; the state lives on the box in
 # DATA/switches.json, so the app's Settings, the Tracker's Try it (through the App Manager) and every device see one state.
 # friendly-phone (issue 18) was approved and is now always on; prune_switches() drops its saved value.
-SWITCHES = []
+SWITCHES = [
+    {'id': 'episode-media', 'name': 'Episode pictures, notes and video',
+     'description': "Each episode shows its own picture (a YouTube video's thumbnail) instead of the show's; Now playing "
+                    'shows the full episode notes under the controls, and a Video button for episodes that have a video.',
+     'default': False, 'issues': ['humanitylabs-org/wizard-podcasts#27']},
+]
 _SWITCH_LOCK = threading.Lock()
 
 
@@ -59,6 +64,11 @@ def switches_doc():
     saved = _saved_switches()
     return {'contract': 'wizard.app-switches/1', 'switches': [
         dict(s, on=saved[s['id']] if isinstance(saved.get(s['id']), bool) else s['default']) for s in SWITCHES]}
+
+
+def switch_on(switch_id):
+    saved = _saved_switches().get(switch_id)
+    return saved if isinstance(saved, bool) else any(s['id'] == switch_id and s['default'] for s in SWITCHES)
 
 
 def set_switch(switch_id, on):
@@ -101,6 +111,12 @@ TRUSTED_ORIGINS = _csv('WIZARD_TRUSTED_ORIGINS') | {'http://' + h for h in _LOCA
 FRAME_ANCESTORS = ' '.join(["'self'"] + sorted(o for o in TRUSTED_ORIGINS if o.startswith('https://')))
 CSP = ("default-src 'self'; img-src 'self' data: https://*.mzstatic.com https://*.ggpht.com https://*.googleusercontent.com; media-src 'self'; connect-src 'self'; "
        f"style-src 'self'; script-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors {FRAME_ANCESTORS}")
+# episode-media (issue 27) plays a YouTube episode's video in the privacy-enhanced embed; only while that switch is on.
+CSP_VIDEO = CSP.replace("default-src 'self';", "default-src 'self'; frame-src https://www.youtube-nocookie.com;")
+
+
+def csp():
+    return CSP_VIDEO if switch_on('episode-media') else CSP
 
 
 # ------------------------------------------------------------------ MCP
@@ -227,7 +243,7 @@ def rpc(msg):
 RANGE = re.compile(r'^bytes=(\d*)-(\d*)$')
 CONTENT_RANGE = re.compile(r'^bytes (\d+)-(\d+)/(\d+|\*)$')
 PROXY_RESUMES = 5  # times one streamed response reopens the host after it cuts off early
-EP_ROUTE = re.compile(r'^/api/episodes/(\d+)(?:/(audio|progress|mark|skip|download|delete-download))?$')
+EP_ROUTE = re.compile(r'^/api/episodes/(\d+)(?:/(audio|art|progress|mark|skip|download|delete-download))?$')
 SHOW_ROUTE = re.compile(r'^/api/shows/(\d+)(?:/(art|refresh|unsubscribe|skip-all))?$')
 
 
@@ -279,7 +295,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header('Content-Length', str(length))
         self.send_header('X-Content-Type-Options', 'nosniff')
         self.send_header('Referrer-Policy', 'no-referrer')
-        self.send_header('Content-Security-Policy', CSP)
+        self.send_header('Content-Security-Policy', csp())
 
     def send(self, code, body=None, content_type='application/json', cache='no-store'):
         b = body if isinstance(body, bytes) else b'' if body is None else json.dumps(body).encode()
@@ -357,10 +373,13 @@ class Handler(BaseHTTPRequestHandler):
                 qs = self.query()
                 return self.send(200, P.show_detail(sid, int(qs.get('limit', '100')), int(qs.get('offset', '0'))))
             m = EP_ROUTE.match(path)
-            if m and m.group(2) in (None, 'audio'):
+            if m and m.group(2) in (None, 'audio', 'art'):
                 eid = int(m.group(1))
                 if m.group(2) == 'audio':
                     return self.audio(eid)
+                if m.group(2) == 'art':
+                    data, ctype = P.episode_art(eid)
+                    return self.send(200, data, ctype, cache='private, max-age=86400')
                 return self.send(200, P.episode(eid))
             if path == '/mcp':
                 return self.send(405, {'error': 'Use POST /mcp.'})
@@ -459,7 +478,7 @@ class Handler(BaseHTTPRequestHandler):
             length = up.header('Content-Length')
             self.send_header('Content-Type', ctype)
             self.send_header('X-Content-Type-Options', 'nosniff')
-            self.send_header('Content-Security-Policy', CSP)
+            self.send_header('Content-Security-Policy', csp())
             self.send_header('Accept-Ranges', 'bytes')
             self.send_header('Cache-Control', 'no-store')
             if up.header('Content-Range'):

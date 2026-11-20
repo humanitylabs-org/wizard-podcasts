@@ -1696,14 +1696,14 @@ def test_friendly_phone_pass():
     # 0.5.9 (issue 18 approved): always on, the friendly-phone switch and its off path are gone
     assert 'placeholder="Search shows or paste a feed"' in html and 'aria-label="Search shows, or paste a feed address or @handle"' in html
     assert "posted(ep.published, new Date(), grouped)" in js
-    assert 'friendly' not in js and 'switchOn' not in js and 'applySwitches' not in js and 'SEARCH_HINT' not in js
+    assert 'friendly' not in js and "switchOn('friendly-phone')" not in js and 'data-pc-friendly' not in js and 'SEARCH_HINT' not in js
     assert 'data-pc-friendly' not in css and 'Search, or paste a feed or @handle' not in html + js
     assert '.pc-speeds { display: grid; grid-template-columns: repeat(8, minmax(0, 1fr));' in css
     # on a phone the show name gets its own line in feed rows
     assert '  .pc-ep .pc-meta-show { flex: 1 0 100%; }' in css
     assert '  .pc-ep .pc-meta-show + .pc-meta-sep { display: none; }' in css
     assert 'calc(100vh - 556px)' in css and '@media (pointer: coarse) { .pc-link { min-height: 44px; } }' in css
-    assert "W.ready({ name: 'wizard-podcasts', version: '0.5.10' })" in js
+    assert "W.ready({ name: 'wizard-podcasts', version: '0.5.11' })" in js
     node = shutil.which('node')
     if not node:
         import pytest
@@ -1724,14 +1724,15 @@ console.log(JSON.stringify([t(600), t(D), u(D), t(2 * D), u(2 * D), t(9 * D), u(
 
 
 def test_owner_switches_api_off_by_default_and_owner_only(monkeypatch):
-    """wizard.app-switches/1: switches are off by default, kept on the box, owner only. No switch is live right now
-    (friendly-phone became always on in issue 18), so this uses a stand-in switch."""
+    """wizard.app-switches/1: switches are off by default, kept on the box, owner only. Uses a stand-in switch so the
+    test does not depend on which switches are live."""
     import server as S
     owner = {'X-Wizard-Switch': '1', 'Tailscale-User-Login': 'owner@example.com'}
     write = dict(owner, Origin=f'http://127.0.0.1:{PORT}')
     (P.DATA / 'switches.json').unlink(missing_ok=True)
     r, d = req('GET', '/api/switches', headers=owner)
-    assert r.status == 200 and json.loads(d) == {'contract': 'wizard.app-switches/1', 'switches': []}
+    assert r.status == 200 and json.loads(d)['contract'] == 'wizard.app-switches/1'
+    assert all(s['on'] is False and s['default'] is False for s in json.loads(d)['switches'])
     monkeypatch.setattr(S, 'SWITCHES', [{'id': 'demo', 'name': 'Demo', 'description': 'd', 'default': False,
                                           'issues': ['humanitylabs-org/wizard-podcasts#0']}])
     r, d = req('GET', '/api/switches', headers=owner)
@@ -1772,7 +1773,7 @@ def test_friendly_phone_switch_removed_and_saved_value_pruned():
     owner = {'X-Wizard-Switch': '1', 'Tailscale-User-Login': 'owner@example.com'}
     assert 'friendly-phone' not in {s['id'] for s in S.SWITCHES}
     (P.DATA / 'switches.json').write_text(json.dumps({'friendly-phone': False}))
-    assert json.loads(req('GET', '/api/switches', headers=owner)[1])['switches'] == []
+    assert 'friendly-phone' not in {s['id'] for s in json.loads(req('GET', '/api/switches', headers=owner)[1])['switches']}
     S.prune_switches()
     assert json.loads((P.DATA / 'switches.json').read_text()) == {}
     (P.DATA / 'switches.json').unlink(missing_ok=True)
@@ -1806,3 +1807,139 @@ def test_view_0510_dropped_stream_resumes_at_same_second():
     # a mid-episode network error or 20 s stuck buffering reopens the source at the same second (3 tries a minute)
     assert 'function reviveStream()' in js and 'state.pendingSeek = at;' in js and 'revive.tries.length >= 3' in js
     assert "audio.error.code !== 4 && reviveStream()" in js and "addEventListener('waiting'" in js
+
+
+# ------------------------------------------------------------------ 0.5.11: episode pictures, notes and video (issue 27)
+
+_MEDIA_N = [0]
+
+
+def _media_show():
+    t = int(time.time())
+    _MEDIA_N[0] += 1
+    n = _MEDIA_N[0]
+
+    def go(c):
+        yt = c.execute('INSERT INTO shows (feed_url, title, added_at, last_checked) VALUES (?,?,?,?)',
+                       (f'https://www.youtube.com/feeds/videos.xml?playlist_id=UULFmediatest0000000000{n}', 'Media YT', t, t)).lastrowid
+        rss = c.execute('INSERT INTO shows (feed_url, title, added_at, last_checked) VALUES (?,?,?,?)',
+                        (f'https://media{n}.example/feed.xml', 'Media RSS', t, t)).lastrowid
+        ids = {}
+        for key, sid, guid, url, mime, image in [
+                ('yt', yt, 'yt:Qxor6jpfSiU', 'https://www.youtube.com/watch?v=Qxor6jpfSiU', '', 'https://i.ytimg.com/vi/Qxor6jpfSiU/hqdefault.jpg'),
+                ('own', rss, 'own', 'https://cdn.example.com/own.mp3', 'audio/mpeg', 'https://media.example/own-art.jpg'),
+                ('plain', rss, 'plain', 'https://cdn.example.com/plain.mp3', 'audio/mpeg', ''),
+                ('video', rss, 'video', 'https://cdn.example.com/v.mp4', 'video/mp4', '')]:
+            ids[key] = c.execute('INSERT INTO episodes (show_id, guid, title, published, enclosure_url, mime, image_url, first_seen, notes) '
+                                 'VALUES (?,?,?,?,?,?,?,?,?)', (sid, guid, key, t, url, mime, image, t, '<p>Full <a href="https://x.example/">notes</a></p>')).lastrowid
+        return yt, rss, ids
+    return P.write(go)
+
+
+def test_episode_media_switch_declared_off_and_linked_to_issue():
+    import server as S
+    sw = {s['id']: s for s in S.SWITCHES}['episode-media']
+    assert sw['default'] is False and sw['issues'] == ['humanitylabs-org/wizard-podcasts#27']
+    (P.DATA / 'switches.json').unlink(missing_ok=True)
+    assert S.switch_on('episode-media') is False
+    assert '| `episode-media`' in (ROOT / 'README.md').read_text()
+
+
+def test_episode_fields_own_art_wide_and_video():
+    yt, rss, ids = _media_show()
+    e = json.loads(req('GET', f'/api/episodes/{ids["yt"]}')[1])
+    assert e['episode_art'] == f'api/episodes/{ids["yt"]}/art' and e['episode_art_wide'] is True
+    assert e['video'] == {'kind': 'youtube', 'id': 'Qxor6jpfSiU'}
+    e = json.loads(req('GET', f'/api/episodes/{ids["own"]}')[1])
+    assert e['episode_art'] == f'api/episodes/{ids["own"]}/art' and e['episode_art_wide'] is False and e['video'] is None
+    e = json.loads(req('GET', f'/api/episodes/{ids["plain"]}')[1])
+    assert e['episode_art'] == e['artwork'] and e['video'] is None  # no own picture: the show art
+    e = json.loads(req('GET', f'/api/episodes/{ids["video"]}')[1])
+    assert e['video'] == {'kind': 'file', 'src': f'api/episodes/{ids["video"]}/audio'}
+    # list endpoints carry the same fields (feed rows use them)
+    rows = {x['id']: x for x in json.loads(req('GET', f'/api/shows/{yt}')[1])['episodes']}
+    assert rows[ids['yt']]['episode_art_wide'] is True
+
+
+def test_episode_art_fetched_cached_and_falls_back(monkeypatch):
+    yt, rss, ids = _media_show()
+    seen = []
+
+    def opener(url, headers=None, timeout=20, method='GET', allow=None):
+        seen.append((url, allow is not None and allow(netfetch.urlsplit(url).hostname)))
+        if url.endswith('/maxresdefault.jpg'):
+            return FakeResp(404, b'', {}, url)
+        if url.endswith('hqdefault.jpg'):
+            return FakeResp(200, b'\xff\xd8hq', {'Content-Type': 'image/jpeg'}, url)
+        if url.endswith('own-art.jpg'):
+            return FakeResp(200, b'PNGown', {'Content-Type': 'image/png'}, url)
+        return fake_open(url, headers, timeout, method, allow)
+    monkeypatch.setattr(P.netfetch, 'open_url', opener)
+    # YouTube: the 16:9 maxres thumbnail first, hqdefault when it is missing; only from YouTube's image hosts
+    r, d = req('GET', f'/api/episodes/{ids["yt"]}/art')
+    assert r.status == 200 and d == b'\xff\xd8hq' and r.getheader('Content-Type') == 'image/jpeg'
+    assert [u for u, _ in seen] == ['https://i.ytimg.com/vi/Qxor6jpfSiU/maxresdefault.jpg', 'https://i.ytimg.com/vi/Qxor6jpfSiU/hqdefault.jpg']
+    assert all(ok for _, ok in seen)
+    # cached: no second fetch
+    seen.clear()
+    assert req('GET', f'/api/episodes/{ids["yt"]}/art')[1] == b'\xff\xd8hq' and seen == []
+    # an RSS episode's own itunes:image
+    r, d = req('GET', f'/api/episodes/{ids["own"]}/art')
+    assert r.status == 200 and d == b'PNGown' and r.getheader('Content-Type') == 'image/png'
+    # nothing of its own and no show art: 404 (the page falls back); a failed fetch is not retried for a day
+    seen.clear()
+    assert req('GET', f'/api/episodes/{ids["plain"]}/art')[0].status == 404
+    assert req('GET', f'/api/episodes/{ids["plain"]}/art')[0].status == 404 and seen == []
+    # with show art cached, an episode without its own picture gets the show's
+    art = P.ART_DIR / f'{rss}.img'
+    art.write_bytes(b'SHOWART')
+    P.write(lambda c: c.execute('UPDATE shows SET art_file=? WHERE id=?', (P._rel(art), rss)))
+    assert req('GET', f'/api/episodes/{ids["plain"]}/art')[1] == b'SHOWART'
+    assert req('GET', '/api/episodes/999999/art')[0].status == 404
+    # unfollowing removes the cached episode pictures
+    assert (P.EP_ART_DIR / f'{ids["own"]}.img').is_file()
+    P.unsubscribe(rss, undo=True)
+    P.unsubscribe(yt, undo=True)
+    assert not (P.EP_ART_DIR / f'{ids["own"]}.img').exists() and not (P.EP_ART_DIR / f'{ids["yt"]}.img').exists()
+
+
+def test_feed_refresh_backfills_episode_image():
+    url = 'https://backfill.example/feed.xml'
+    FEEDS[url] = RSS.replace(b'<item><title>Ep 1</title>', b'<item><title>Ep 1</title>', 1)
+    sid = P.subscribe(url)['show']['id']
+    wait_for(lambda: P.q('SELECT 1 FROM episodes WHERE show_id=? AND guid=?', (sid, 'g1'), one=True))
+    assert P.q('SELECT image_url FROM episodes WHERE show_id=? AND guid=?', (sid, 'g1'), one=True)['image_url'] == ''
+    FEEDS[url] = RSS.replace(b'<item><title>Ep 1</title>', b'<item><title>Ep 1</title><itunes:image href="https://backfill.example/e1.jpg"/>', 1)
+    P.write(lambda c: c.execute("UPDATE shows SET etag='' WHERE id=?", (sid,)))
+    P.refresh_show(sid)
+    assert P.q('SELECT image_url FROM episodes WHERE show_id=? AND guid=?', (sid, 'g1'), one=True)['image_url'] == 'https://backfill.example/e1.jpg'
+    P.unsubscribe(sid, undo=True)
+
+
+def test_csp_allows_the_youtube_embed_only_with_the_switch_on():
+    owner = {'X-Wizard-Switch': '1', 'Tailscale-User-Login': 'owner@example.com'}
+    write = dict(owner, Origin=f'http://127.0.0.1:{PORT}')
+    (P.DATA / 'switches.json').unlink(missing_ok=True)
+    assert 'youtube-nocookie' not in req('GET', '/')[0].getheader('Content-Security-Policy')
+    assert req('POST', '/api/switches', {'id': 'episode-media', 'on': True}, headers=write)[0].status == 200
+    assert 'frame-src https://www.youtube-nocookie.com;' in req('GET', '/')[0].getheader('Content-Security-Policy')
+    req('POST', '/api/switches', {'id': 'episode-media', 'on': False}, headers=write)
+    assert 'youtube-nocookie' not in req('GET', '/')[0].getheader('Content-Security-Policy')
+    (P.DATA / 'switches.json').unlink(missing_ok=True)
+
+
+def test_episode_media_view_is_gated_and_off_keeps_the_old_layout():
+    js = (ROOT / 'web/app.js').read_text()
+    css = (ROOT / 'web/styles.css').read_text()
+    html = (ROOT / 'web/index.html').read_text()
+    assert "function mediaOn() { return switchOn('episode-media'); }" in js
+    assert "const own = mediaOn() && ep.episode_art && ep.episode_art !== ep.artwork;" in js
+    assert "document.documentElement.toggleAttribute('data-pc-media', mediaOn());" in js
+    assert 'renderNotes(box, ep.notes_html);' in js and "if (!ep || ep.preview || !mediaOn()) { box.hidden = true;" in js
+    assert "YT_ORIGIN = 'https://www.youtube-nocookie.com'" in js and "e.origin !== YT_ORIGIN" in js
+    assert 'id="pl-notes" class="pc-notes wz-prose pc-plnotes" hidden' in html and 'id="pl-video"' in html
+    # every new rule is under html[data-pc-media] except the wrapper's off state, which adds no box
+    gated = css.split('Switch episode-media (issue 27')[1].split('*/', 1)[1]
+    rules = [l.strip() for l in gated.splitlines() if '{' in l and not l.strip().startswith('@')]
+    assert rules[0] == '.pc-plmedia { display: contents; }'
+    assert all(r.startswith('html[data-pc-media] ') for r in rules[1:]), rules

@@ -22,7 +22,11 @@ New behaviour lands switched off. The owner turns it on in the gear (Discover) u
 WizardOS Tracker's Try it (`GET/POST /api/switches`, `wizard.app-switches/1`). The state is kept on the Wizard, so every
 device sees the same.
 
-There are no switches right now. `friendly-phone` (Friendlier on a phone, #18) was approved in 0.5.9 and is always on:
+| Switch | What it changes | Issue |
+|---|---|---|
+| `episode-media` (Episode pictures, notes and video) | Each episode shows its own picture (its feed image, or a YouTube video's thumbnail, kept 16:9 in Now playing and on the episode page) in the feed, episode page, Now playing, mini player and lock screen, falling back to the show's art; Now playing shows the episode's full notes under the controls; YouTube episodes and video enclosures get a Video button that plays the video in place of the cover from the current second and hands the second back to the audio when turned off. | #27 |
+
+`friendly-phone` (Friendlier on a phone, #18) was approved in 0.5.9 and is always on:
 on a phone, feed rows give the show name its own line and rows under a day heading show just the time; the full player
 fits one phone screen (cover gives way, eight speeds in one row); the Discover hint reads "Search shows or paste a
 feed"; 44 px show links on touch screens.
