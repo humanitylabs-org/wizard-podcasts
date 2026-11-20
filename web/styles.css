@@ -366,9 +366,8 @@
 html[data-pc-media] .pc-plmedia { display: block; position: relative; width: fit-content; max-width: 100%; margin: 0 auto; }
 html[data-pc-media] .pc-plmedia > .pc-art-xl { margin-left: auto; margin-right: auto; }
 html[data-pc-media] .pc-player .pc-art-xl.pc-wide { aspect-ratio: 16 / 9; height: auto; max-width: 100%; border: 0; width: min(calc(100cqw - 40px), 640px, calc(max(120px, min(72vw, 340px, 34vh, calc(100vh - 556px))) * 16 / 9)); }
-html[data-pc-media] .pc-player .pc-plframe { background: #000; }
-html[data-pc-media] .pc-plvideo { position: absolute; top: 8px; right: 8px; z-index: 1; min-height: 36px; padding: 0 14px; border: 0; border-radius: 999px; font: inherit; font-size: var(--wz-text-sm, .8125rem); font-weight: 600; color: #fff; background: color-mix(in srgb, #000 62%, transparent); cursor: pointer; }
-html[data-pc-media] .pc-plvideo[aria-pressed="true"] { background: color-mix(in srgb, #000 80%, transparent); }
+html[data-pc-media] .pc-player .pc-plframe { background: var(--wz-base); }
+html[data-pc-media] .pc-plvideo { position: absolute; top: 8px; right: 8px; z-index: 1; min-height: 36px; padding: 0 14px; border: 0; border-radius: 999px; font: inherit; font-size: var(--wz-text-sm, .8125rem); font-weight: 600; color: var(--wz-on-accent); background: var(--wz-accent); box-shadow: 0 2px 10px var(--wz-overlay); cursor: pointer; }
 html[data-pc-media] .pc-plnotes { text-align: left; padding-top: 12px; border-top: 1px solid var(--wz-surface-raised, color-mix(in srgb, currentColor 12%, transparent)); }
 html[data-pc-media] #view-episode .pc-art-lg.pc-wide { width: 160px; height: 90px; aspect-ratio: 16 / 9; }
 @container wz-app (width < 700px) {
