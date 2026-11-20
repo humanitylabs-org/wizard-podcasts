@@ -1646,7 +1646,7 @@ def test_view_053_clear_play_errors_youtube_hint_and_exact_name_first():
     js = (ROOT / 'web/app.js').read_text()
     # a failed source shows the app's own reason (YouTube Music missing), never the browser's 'no supported source'
     assert "function playFailed(e) { if (e.name !== 'AbortError' && e.name !== 'NotSupportedError')" in js
-    assert js.count('p.catch(playFailed)') == 3 and "headers: { Range: 'bytes=0-0' }" in js
+    assert js.count('p.catch(playFailed)') == 4 and "headers: { Range: 'bytes=0-0' }" in js
     assert "Could not start playback: ' + e.message, 'error'); });" not in js
     # following a YouTube channel without YouTube Music says so at once (search results and Discover cards)
     assert js.count('youtubeHint(r.show)') == 2 and "!st.youtube.installed" in js
