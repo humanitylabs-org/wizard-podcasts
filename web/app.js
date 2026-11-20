@@ -8,7 +8,15 @@
  * nav bar sits at the bottom with the mini player right above it; wide windows keep newest on top. */
 const $ = id => document.getElementById(id);
 const W = window.WizardApp && window.WizardApp.version === 1 ? window.WizardApp : null;
-const audio = $('audio');
+// Behind the owner switch phone-player (issue 30, off by default): on the Wizard Android app an episode plays through
+// the phone's own media player (lock screen, notification, headset, keeps playing locked); everywhere else, and for
+// previews, it is the page's <audio>. web/phone-player.js keeps the element's surface, so the code below is shared.
+const audio = window.PodcastsPhonePlayer ? window.PodcastsPhonePlayer.create($('audio'), {
+  request: W && W.device && W.device.backgroundAudio ? (m, p) => W.device.backgroundAudio.request(m, p) : null,
+  enabled: () => switchOn('phone-player'), track: phoneTrack, startAt: phoneStartAt,
+  skip: () => ({ back: state.settings.skip_back, forward: state.settings.skip_forward }),
+  hidden: () => document.hidden,
+}) : $('audio');
 const SPEEDS = [0.8, 1, 1.2, 1.5, 1.75, 2, 2.5, 3];
 const PAGE = 100;
 // episode-media (issue 27): the video shown in Now playing instead of the cover, and whose notes it shows
@@ -1112,6 +1120,25 @@ async function loadSwitches() {
   if (was !== JSON.stringify(switches)) applySwitches();
 }
 function switchOn(id) { return !!switches.find(s => s.id === id && s.on); }
+// phone-player (issue 30): the native queue item for the episode in the player. Root-relative paths without query
+// strings, the only kind the phone's player opens (wizard-ux docs/apps-out-of-core.md). A preview stays in the page.
+function phoneTrack(src) {
+  const ep = state.current, m = /^api\/episodes\/(\d+)\/audio$/.exec(src || '');
+  if (!ep || ep.preview || !m || +m[1] !== ep.id) return null;
+  const base = new URL('.', location.href).pathname, show = ep.show_title || '';
+  const pic = [mediaOn() ? ep.episode_art : '', ep.artwork].find(a => /^api\/(?:episodes|shows)\/\d+\/art$/.test(a || ''));
+  const t = { id: 'ep:' + ep.id, title: ep.title || '', artist: show, album: show, stream: base + src, progress: base + 'api/episodes/' + ep.id + '/progress' };
+  if (pic) t.art = base + pic;
+  return t;
+}
+// Where the phone's player starts: the place waiting to be applied (as loadedmetadata would), else where it is now.
+function phoneStartAt() {
+  const ep = state.current;
+  let at = state.pendingSeek != null ? state.pendingSeek : audio.currentTime;
+  state.pendingSeek = null;
+  if (ep && ep.duration && at > ep.duration - 5) at = 0;
+  return at || 0;
+}
 function applySwitches() {
   document.documentElement.toggleAttribute('data-pc-media', mediaOn());
   if (!mediaOn()) stopVideo(false);
@@ -1379,6 +1406,9 @@ function renderPlayer() {
 async function saveProgress(force, completed = false) {
   const ep = state.current;
   if (!ep || ep.preview || !state.touched || (!audio.readyState && !completed)) return;
+  // The phone's player saves the place itself every 15 s and on pause (also locked); the page adds only explicit saves
+  // (seek, skip, close, end) with the position that player reports, so the two agree.
+  if (audio.native && !force && !completed) return;
   const pos = Math.floor(audio.currentTime * 10) / 10;
   if (!force && !completed && Math.abs(pos - state.savedPos) < 3) return;
   state.savedPos = pos; state.lastSaved = Date.now();
@@ -1389,6 +1419,7 @@ async function saveProgress(force, completed = false) {
 function beaconProgress() {
   const ep = state.current;
   if (!ep || ep.preview || !state.touched || (!audio.readyState && !vid.on)) return;
+  if (audio.native && !vid.on) return;  // the phone's player keeps saving while the page is hidden
   // keepalive lets the save finish while the page is being hidden or closed.
   const at = vid.on ? vid.t : audio.currentTime;
   const body = JSON.stringify({ position: Math.floor(at), duration: duration() || undefined });
@@ -1428,7 +1459,7 @@ audio.addEventListener('play', () => {
   state.touched = true;
   audio.playbackRate = state.settings.speed;
   if (W && !state.playHold) state.playHold = W.update.hold('Playing a podcast');
-  if (W && !state.ducked) { state.ducked = true; W.audio.duck(true); }
+  if (W && !state.ducked && !audio.native) { state.ducked = true; W.audio.duck(true); }  // the phone's player is ours: never duck it
   paintPlayer(); paintEpisodePlay();
 });
 audio.addEventListener('pause', async () => {
@@ -1687,6 +1718,7 @@ if (!W) {
 }
 document.addEventListener('visibilitychange', async () => {
   if (document.hidden) { beaconProgress(); return; }
+  if (audio.wake) audio.wake();  // the lock screen or headset may have played, paused or moved it meanwhile
   // Back in front: pick up position changes made on another device while paused here.
   if (state.current && audio.paused && !vid.on) { await syncFromServer(); paintPlayer(); }
   if (currentView() !== 'discover') reload();
@@ -1697,6 +1729,8 @@ window.addEventListener('pagehide', beaconProgress);
 (async function start() {
   try { state.settings = await api('api/settings'); } catch (_) {}
   await loadSwitches();
+  // Ask the phone once whether its player admits Podcasts (fails fast in a browser); never hold the view for it.
+  if (audio.probe) await Promise.race([audio.probe(), new Promise(r => setTimeout(r, 3000))]);
   const qs = new URLSearchParams(location.search);
   paint();
   try { await loadFeed(); } catch (e) { say(e.message, 'error'); }

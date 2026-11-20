@@ -33,11 +33,12 @@ view:
     dist: web
 health: /healthz
 # Feature switches (wizard.app-switches/1, wizard-os docs/APP_SWITCHES.md): the App Manager lists and flips them, so the
-# WizardOS Tracker's Try it works the same in every browser. Off by default: episode-media (issue 27).
+# WizardOS Tracker's Try it works the same in every browser. Off by default: episode-media (issue 27), phone-player (issue 30).
 switches:
   contract: wizard.app-switches/1
   path: /api/switches
-provides: [podcasts]
+# background-audio: the owner-installed grant for the phone's own media player (wizard-ux docs/apps-out-of-core.md).
+provides: [podcasts, background-audio]
 uses: [music-source]
 needs: []
 ---

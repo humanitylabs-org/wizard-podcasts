@@ -1943,3 +1943,40 @@ def test_episode_media_view_is_gated_and_off_keeps_the_old_layout():
     rules = [l.strip() for l in gated.splitlines() if '{' in l and not l.strip().startswith('@')]
     assert rules[0] == '.pc-plmedia { display: contents; }'
     assert all(r.startswith('html[data-pc-media] ') for r in rules[1:]), rules
+
+
+# ------------------------------------------------------------------ issue 30: the phone's own media player
+def test_phone_player_switch_declared_off_and_linked_to_issue():
+    import server as S
+    sw = {s['id']: s for s in S.SWITCHES}['phone-player']
+    assert sw['default'] is False and sw['issues'] == ['humanitylabs-org/wizard-podcasts#30']
+    (P.DATA / 'switches.json').unlink(missing_ok=True)
+    assert S.switch_on('phone-player') is False
+    assert '| `phone-player`' in (ROOT / 'README.md').read_text()
+
+
+def test_phone_player_grant_and_wiring():
+    md = (ROOT / 'wizard.md').read_text()
+    assert re.search(r'^provides: \[podcasts, background-audio\]$', md, re.M)
+    html = (ROOT / 'web/index.html').read_text()
+    assert html.index('src="phone-player.js"') < html.index('src="app.js"')
+    js = (ROOT / 'web/app.js').read_text()
+    assert "enabled: () => switchOn('phone-player')" in js
+    assert 'W.device.backgroundAudio.request(m, p)' in js
+    # the native player is Podcasts itself: never duck it; it saves the place itself, so no periodic/beacon saves
+    assert '!state.ducked && !audio.native' in js
+    assert 'if (audio.native && !force && !completed) return;' in js
+    assert 'if (audio.native && !vid.on) return;' in js
+    # the track the phone may open: root-relative, no query strings (wizard-ux docs/apps-out-of-core.md)
+    assert "id: 'ep:' + ep.id" in js and "base + 'api/episodes/' + ep.id + '/progress'" in js
+    assert '/^api\\/(?:episodes|shows)\\/\\d+\\/art$/' in js
+
+
+def test_phone_player_unit():
+    import shutil
+    import subprocess
+    node = shutil.which('node')
+    if not node:
+        pytest.skip('node not installed')
+    r = subprocess.run([node, '--test', str(ROOT / 'tests/phone_player.test.cjs')], capture_output=True, text=True, timeout=120)
+    assert r.returncode == 0, r.stdout[-4000:] + r.stderr[-2000:]

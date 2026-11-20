@@ -2,9 +2,10 @@
 from pathlib import Path
 
 root = Path(__file__).resolve().parent.parent
-for name in ('index.html', 'boot.js', 'wizard-tokens.css', 'wizard-ui.css', 'wizard-sheet.js', 'standalone.css', 'styles.css', 'app.js'):
+for name in ('index.html', 'boot.js', 'wizard-tokens.css', 'wizard-ui.css', 'wizard-sheet.js', 'standalone.css', 'styles.css', 'phone-player.js', 'app.js'):
     assert (root / 'web' / name).is_file(), name
 html = (root / 'web/index.html').read_text()
 assert '/wizard-os-home/core/app-client.js' in html, 'Shared system client must load before app code'
 assert html.index('/wizard-os-home/core/app-client.js') < html.index('app.js'), 'Shared client load order'
+assert html.index('phone-player.js') < html.index('"app.js"'), 'phone-player.js must load before app.js'
 print('View built: web/ (vanilla source, no dependencies)')
