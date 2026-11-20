@@ -44,6 +44,11 @@ SWITCHES = [
      'description': "Each episode shows its own picture (a YouTube video's thumbnail) instead of the show's; Now playing "
                     'shows the full episode notes under the controls, and a Video button for episodes that have a video.',
      'default': False, 'issues': ['humanitylabs-org/wizard-podcasts#27']},
+    {'id': 'phone-player', 'name': "Play through the phone's media player",
+     'description': 'On the Wizard Android app, episodes play through the phone itself: lock screen and notification '
+                    'controls with back 15 s / forward 30 s, headset buttons, and they keep playing (and saving your '
+                    'place) with the screen locked. Needs Wizard Android 0.10.57 or newer; elsewhere nothing changes.',
+     'default': False, 'issues': ['humanitylabs-org/wizard-podcasts#30']},
 ]
 _SWITCH_LOCK = threading.Lock()
 
