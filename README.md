@@ -22,9 +22,14 @@ New behaviour lands switched off. The owner turns it on in the gear (Discover) u
 WizardOS Tracker's Try it (`GET/POST /api/switches`, `wizard.app-switches/1`). The state is kept on the Wizard, so every
 device sees the same.
 
-| Switch | What it changes | Issue |
-|---|---|---|
-| `phone-player` (Play through the phone's media player) | On the Wizard Android app (0.10.57 or newer, shell switch `wizard/lock-screen-player`), episodes play through the phone's own media player instead of the page: lock screen and notification controls with back 15 s / forward 30 s, headset buttons, artwork, a scrubbable progress bar, and they keep playing with the screen locked; the notification opens Podcasts and the player saves your place itself (every 15 s, on pause, marked played at the end). In a browser, on an older app or for previews nothing changes. Playback speed applies to the page player only for now. | #30 |
+No switches right now.
+
+`phone-player` (Play through the phone's media player, #30) was approved in 0.5.14 and is always on: on the Wizard
+Android app (0.10.57 or newer, shell switch `wizard/lock-screen-player`), episodes play through the phone's own media
+player instead of the page: lock screen and notification controls with back 15 s / forward 30 s, headset buttons,
+artwork, a scrubbable progress bar, and they keep playing with the screen locked; the notification opens Podcasts and
+the player saves your place itself (every 15 s, on pause, marked played at the end). In a browser, on an older app or
+for previews nothing changes. Playback speed applies to the page player only for now.
 
 `episode-media` (Episode pictures, notes and video, #27) was approved in 0.5.13 and is always on: each episode shows
 its own picture (its feed image, or a YouTube video's thumbnail, kept 16:9 in Now playing and on the episode page) in

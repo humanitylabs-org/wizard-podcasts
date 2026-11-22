@@ -8,12 +8,12 @@
  * nav bar sits at the bottom with the mini player right above it; wide windows keep newest on top. */
 const $ = id => document.getElementById(id);
 const W = window.WizardApp && window.WizardApp.version === 1 ? window.WizardApp : null;
-// Behind the owner switch phone-player (issue 30, off by default): on the Wizard Android app an episode plays through
+// Issue 30 (always on): on the Wizard Android app an episode plays through
 // the phone's own media player (lock screen, notification, headset, keeps playing locked); everywhere else, and for
 // previews, it is the page's <audio>. web/phone-player.js keeps the element's surface, so the code below is shared.
 const audio = window.PodcastsPhonePlayer ? window.PodcastsPhonePlayer.create($('audio'), {
   request: W && W.device && W.device.backgroundAudio ? (m, p) => W.device.backgroundAudio.request(m, p) : null,
-  enabled: () => switchOn('phone-player'), track: phoneTrack, startAt: phoneStartAt,
+  track: phoneTrack, startAt: phoneStartAt,
   skip: () => ({ back: state.settings.skip_back, forward: state.settings.skip_forward }),
   hidden: () => document.hidden,
 }) : $('audio');
@@ -1119,8 +1119,7 @@ async function loadSwitches() {
   } catch (_) { /* keep the last known switches (off by default) */ }
   if (was !== JSON.stringify(switches)) applySwitches();
 }
-function switchOn(id) { return !!switches.find(s => s.id === id && s.on); }
-// phone-player (issue 30): the native queue item for the episode in the player. Root-relative paths without query
+// Issue 30: the native queue item for the episode in the player. Root-relative paths without query
 // strings, the only kind the phone's player opens (wizard-ux docs/apps-out-of-core.md). A preview stays in the page.
 function phoneTrack(src) {
   const ep = state.current, m = /^api\/episodes\/(\d+)\/audio$/.exec(src || '');
@@ -1709,7 +1708,7 @@ $('pl-video').onclick = () => { if (vid.on) stopVideo(true); else startVideo(); 
 if (!W) {
   say('Wizard system functions are unavailable. Open Podcasts through Wizard.', 'error');
 } else {
-  W.ready({ name: 'wizard-podcasts', version: '0.5.13' });
+  W.ready({ name: 'wizard-podcasts', version: '0.5.14' });
   // Domain Back: close the page on top (show, episode, player), then Discover -> My feed; at My feed the core decides.
   W.back.register({ canGoBack: () => state.stack.length > 0 || state.tab !== 'feed', back: () => popView() });
 }

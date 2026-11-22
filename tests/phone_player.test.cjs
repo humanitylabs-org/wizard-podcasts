@@ -1,5 +1,5 @@
 // Issue 30: web/phone-player.js routes an episode through the phone's own media player (WizardApp.device.backgroundAudio)
-// when the APK admits wizard-podcasts and the phone-player switch is on; otherwise it is the plain <audio> element.
+// when the APK admits wizard-podcasts (always on since the switch was removed); otherwise it is the plain <audio> element.
 // Run: node --test tests/phone_player.test.cjs (also run by tests/test_podcasts.py).
 const test = require('node:test');
 const assert = require('node:assert/strict');
@@ -21,7 +21,7 @@ function fakeEl() {
   };
 }
 const TRACK = { id: 'ep:7', title: 'T', artist: 'S', album: 'S', stream: '/wizard-podcasts/api/episodes/7/audio', progress: '/wizard-podcasts/api/episodes/7/progress' };
-function rig({ apps = [APP], switchOn = true, failLoad = false, initial = null } = {}) {
+function rig({ apps = [APP], failLoad = false, initial = null } = {}) {
   const calls = [], el = fakeEl();
   let clock = 1000, snap = initial, tick = null;
   const request = (method, params) => {
@@ -41,7 +41,7 @@ function rig({ apps = [APP], switchOn = true, failLoad = false, initial = null }
     return Promise.reject(new Error('unknown ' + method));
   };
   const a = create(el, {
-    request, enabled: () => switchOn, track: src => src === 'api/episodes/7/audio' ? TRACK : null,
+    request, track: src => src === 'api/episodes/7/audio' ? TRACK : null,
     startAt: () => 754.3, skip: () => ({ back: 15, forward: 30 }), now: () => clock,
     every: fn => { tick = fn; return 1; },
   });
@@ -63,8 +63,8 @@ test('browser (no phone player): the plain element plays, nothing native is aske
   assert.equal(r.a.native, false);
 });
 
-test('old APK (capabilities without wizard-podcasts) or switch off: the element', async () => {
-  for (const opts of [{ apps: [] }, { apps: ['wizard-music'] }, { switchOn: false }]) {
+test('old APK (capabilities without wizard-podcasts): the element', async () => {
+  for (const opts of [{ apps: [] }, { apps: ['wizard-music'] }]) {
     const r = rig(opts);
     await r.a.probe();
     r.a.src = 'api/episodes/7/audio';

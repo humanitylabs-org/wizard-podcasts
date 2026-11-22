@@ -22,7 +22,7 @@ from podcasts import Problem  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 APP_ID = 'wizard-podcasts'
-VERSION = '0.5.13'
+VERSION = '0.5.14'
 PORT = int(os.environ.get('PORT', '9207'))
 PREFIX = '/' + APP_ID
 STATIC_TYPES = {'.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8',
@@ -38,15 +38,9 @@ DEV_MODE = os.environ.get('PODCASTS_DEV_MODE') == 'loopback-single-owner'  # loc
 
 # wizard.app-switches/1 (wizard-os docs/APP_SWITCHES.md). Off by default; the state lives on the box in
 # DATA/switches.json, so the app's Settings, the Tracker's Try it (through the App Manager) and every device see one state.
-# friendly-phone (issue 18) and episode-media (issue 27) were approved and are now always on; prune_switches() drops
-# their saved values.
-SWITCHES = [
-    {'id': 'phone-player', 'name': "Play through the phone's media player",
-     'description': 'On the Wizard Android app, episodes play through the phone itself: lock screen and notification '
-                    'controls with back 15 s / forward 30 s, headset buttons, and they keep playing (and saving your '
-                    'place) with the screen locked. Needs Wizard Android 0.10.57 or newer; elsewhere nothing changes.',
-     'default': False, 'issues': ['humanitylabs-org/wizard-podcasts#30']},
-]
+# friendly-phone (issue 18), episode-media (issue 27) and phone-player (issue 30) were approved and are now always on;
+# prune_switches() drops their saved values. The endpoint stays (contract), with an empty list.
+SWITCHES = []
 _SWITCH_LOCK = threading.Lock()
 
 
@@ -86,7 +80,7 @@ def set_switch(switch_id, on):
 
 def prune_switches():
     """Drop saved values of switches that no longer exist (e.g. `reply`, dropped in issue 19, or
-    `friendly-phone` and `episode-media`, always on since issues 18 and 27), so no stale state stays."""
+    `friendly-phone`, `episode-media` and `phone-player`, always on since issues 18, 27 and 30), so no stale state stays."""
     ids = {s['id'] for s in SWITCHES}
     with _SWITCH_LOCK:
         saved = _saved_switches()

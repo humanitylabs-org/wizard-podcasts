@@ -1,16 +1,15 @@
 'use strict';
-/* Podcasts on the phone's own media player (issue 30, switch phone-player, off by default).
+/* Podcasts on the phone's own media player (issue 30, always on).
  *
  * create(el, opts) returns a stand-in for the page's <audio> element with the same small surface app.js uses (paused,
  * currentTime, duration, readyState, playbackRate, error, src, play(), pause(), load(), get/removeAttribute('src'),
  * addEventListener). While an episode plays natively it drives WizardApp.device.backgroundAudio (the Wizard Android
  * app's player: lock screen and notification controls, headset buttons, keeps playing locked) and fires the same events
  * the element would (play, pause, timeupdate, seeked, ended, loadedmetadata) from polled state. Every other case
- * (browser, an APK that does not admit wizard-podcasts, the switch off, a preview, any native failure) is the plain
+ * (browser, an APK that does not admit wizard-podcasts, a preview, any native failure) is the plain
  * element, so today's <audio> + navigator.mediaSession path is unchanged.
  *
- * opts: request(method, params) -> Promise (WizardApp.device.backgroundAudio.request), enabled() -> bool (the switch),
- * track(src) -> native queue item or null, startAt() -> seconds to start from, skip() -> {back, forward},
+ * opts: request(method, params) -> Promise (WizardApp.device.backgroundAudio.request), track(src) -> native queue item or null, startAt() -> seconds to start from, skip() -> {back, forward},
  * hidden() -> bool, now() -> ms, every(fn, ms) -> timer (setInterval). Contract: wizard-ux docs/apps-out-of-core.md. */
 (function (root) {
   const APP = 'wizard-podcasts';
@@ -31,7 +30,7 @@
       return o.request('capabilities', {}).then(c => { capable = !!(c && Array.isArray(c.apps) && c.apps.includes(APP)); return capable; },
         () => { capable = false; return false; });
     }
-    const wanted = src => capable === true && !!src && !!o.enabled() && !!o.track(src);
+    const wanted = src => capable === true && !!src && !!o.track(src);
     const ms = sec => Math.max(0, Math.round((Number(sec) || 0) * 1000));
     const pos = () => {
       if (!nat || !nat.st) return 0;
