@@ -22,7 +22,7 @@ from podcasts import Problem  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 APP_ID = 'wizard-podcasts'
-VERSION = '0.5.12'
+VERSION = '0.5.13'
 PORT = int(os.environ.get('PORT', '9207'))
 PREFIX = '/' + APP_ID
 STATIC_TYPES = {'.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8',
@@ -38,12 +38,9 @@ DEV_MODE = os.environ.get('PODCASTS_DEV_MODE') == 'loopback-single-owner'  # loc
 
 # wizard.app-switches/1 (wizard-os docs/APP_SWITCHES.md). Off by default; the state lives on the box in
 # DATA/switches.json, so the app's Settings, the Tracker's Try it (through the App Manager) and every device see one state.
-# friendly-phone (issue 18) was approved and is now always on; prune_switches() drops its saved value.
+# friendly-phone (issue 18) and episode-media (issue 27) were approved and are now always on; prune_switches() drops
+# their saved values.
 SWITCHES = [
-    {'id': 'episode-media', 'name': 'Episode pictures, notes and video',
-     'description': "Each episode shows its own picture (a YouTube video's thumbnail) instead of the show's; Now playing "
-                    'shows the full episode notes under the controls, and a Video button for episodes that have a video.',
-     'default': False, 'issues': ['humanitylabs-org/wizard-podcasts#27']},
     {'id': 'phone-player', 'name': "Play through the phone's media player",
      'description': 'On the Wizard Android app, episodes play through the phone itself: lock screen and notification '
                     'controls with back 15 s / forward 30 s, headset buttons, and they keep playing (and saving your '
@@ -89,7 +86,7 @@ def set_switch(switch_id, on):
 
 def prune_switches():
     """Drop saved values of switches that no longer exist (e.g. `reply`, dropped in issue 19, or
-    `friendly-phone`, always on since issue 18), so no stale state stays."""
+    `friendly-phone` and `episode-media`, always on since issues 18 and 27), so no stale state stays."""
     ids = {s['id'] for s in SWITCHES}
     with _SWITCH_LOCK:
         saved = _saved_switches()
@@ -116,12 +113,12 @@ TRUSTED_ORIGINS = _csv('WIZARD_TRUSTED_ORIGINS') | {'http://' + h for h in _LOCA
 FRAME_ANCESTORS = ' '.join(["'self'"] + sorted(o for o in TRUSTED_ORIGINS if o.startswith('https://')))
 CSP = ("default-src 'self'; img-src 'self' data: https://*.mzstatic.com https://*.ggpht.com https://*.googleusercontent.com; media-src 'self'; connect-src 'self'; "
        f"style-src 'self'; script-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors {FRAME_ANCESTORS}")
-# episode-media (issue 27) plays a YouTube episode's video in the privacy-enhanced embed; only while that switch is on.
-CSP_VIDEO = CSP.replace("default-src 'self';", "default-src 'self'; frame-src https://www.youtube-nocookie.com;")
+# Issue 27: Now playing plays a YouTube episode's video in the privacy-enhanced embed.
+CSP = CSP.replace("default-src 'self';", "default-src 'self'; frame-src https://www.youtube-nocookie.com;")
 
 
 def csp():
-    return CSP_VIDEO if switch_on('episode-media') else CSP
+    return CSP
 
 
 # ------------------------------------------------------------------ MCP

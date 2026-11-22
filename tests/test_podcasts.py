@@ -1703,7 +1703,7 @@ def test_friendly_phone_pass():
     assert '  .pc-ep .pc-meta-show { flex: 1 0 100%; }' in css
     assert '  .pc-ep .pc-meta-show + .pc-meta-sep { display: none; }' in css
     assert 'calc(100vh - 556px)' in css and '@media (pointer: coarse) { .pc-link { min-height: 44px; } }' in css
-    assert "W.ready({ name: 'wizard-podcasts', version: '0.5.12' })" in js
+    assert "W.ready({ name: 'wizard-podcasts', version: '0.5.13' })" in js
     node = shutil.which('node')
     if not node:
         import pytest
@@ -1836,13 +1836,18 @@ def _media_show():
     return P.write(go)
 
 
-def test_episode_media_switch_declared_off_and_linked_to_issue():
+def test_episode_media_switch_removed_and_saved_value_pruned():
+    """Issue 27 (switch-default): episode-media is always on; its switch is gone and a saved value for it is pruned."""
     import server as S
-    sw = {s['id']: s for s in S.SWITCHES}['episode-media']
-    assert sw['default'] is False and sw['issues'] == ['humanitylabs-org/wizard-podcasts#27']
+    owner = {'X-Wizard-Switch': '1', 'Tailscale-User-Login': 'owner@example.com'}
+    assert 'episode-media' not in {s['id'] for s in S.SWITCHES}
+    (P.DATA / 'switches.json').write_text(json.dumps({'episode-media': False}))
+    assert 'episode-media' not in {s['id'] for s in json.loads(req('GET', '/api/switches', headers=owner)[1])['switches']}
+    S.prune_switches()
+    assert json.loads((P.DATA / 'switches.json').read_text()) == {}
     (P.DATA / 'switches.json').unlink(missing_ok=True)
-    assert S.switch_on('episode-media') is False
-    assert '| `episode-media`' in (ROOT / 'README.md').read_text()
+    assert '| `episode-media`' not in (ROOT / 'README.md').read_text()
+    assert 'episode-media' not in (ROOT / 'wizard.md').read_text()
 
 
 def test_episode_fields_own_art_wide_and_video():
@@ -1916,33 +1921,25 @@ def test_feed_refresh_backfills_episode_image():
     P.unsubscribe(sid, undo=True)
 
 
-def test_csp_allows_the_youtube_embed_only_with_the_switch_on():
-    owner = {'X-Wizard-Switch': '1', 'Tailscale-User-Login': 'owner@example.com'}
-    write = dict(owner, Origin=f'http://127.0.0.1:{PORT}')
+def test_csp_always_allows_the_youtube_embed():
     (P.DATA / 'switches.json').unlink(missing_ok=True)
-    assert 'youtube-nocookie' not in req('GET', '/')[0].getheader('Content-Security-Policy')
-    assert req('POST', '/api/switches', {'id': 'episode-media', 'on': True}, headers=write)[0].status == 200
     assert 'frame-src https://www.youtube-nocookie.com;' in req('GET', '/')[0].getheader('Content-Security-Policy')
-    req('POST', '/api/switches', {'id': 'episode-media', 'on': False}, headers=write)
-    assert 'youtube-nocookie' not in req('GET', '/')[0].getheader('Content-Security-Policy')
-    (P.DATA / 'switches.json').unlink(missing_ok=True)
 
 
-def test_episode_media_view_is_gated_and_off_keeps_the_old_layout():
+def test_episode_media_view_always_on():
     js = (ROOT / 'web/app.js').read_text()
     css = (ROOT / 'web/styles.css').read_text()
     html = (ROOT / 'web/index.html').read_text()
-    assert "function mediaOn() { return switchOn('episode-media'); }" in js
-    assert "const own = mediaOn() && ep.episode_art && ep.episode_art !== ep.artwork;" in js
-    assert "document.documentElement.toggleAttribute('data-pc-media', mediaOn());" in js
-    assert 'renderNotes(box, ep.notes_html);' in js and "if (!ep || ep.preview || !mediaOn()) { box.hidden = true;" in js
+    # issue 27 approved: no switch, no off path
+    assert 'mediaOn' not in js and "switchOn('episode-media')" not in js and 'data-pc-media' not in js + css
+    assert "const own = ep.episode_art && ep.episode_art !== ep.artwork;" in js
+    assert 'renderNotes(box, ep.notes_html);' in js and "if (!ep || ep.preview) { box.hidden = true;" in js
+    assert "return ep && !ep.preview && ep.video && ['youtube', 'file'].includes(ep.video.kind)" in js
+    assert "artwork: ep.episode_art ? [{ src: new URL(ep.episode_art, location.href).href }]" in js
     assert "YT_ORIGIN = 'https://www.youtube-nocookie.com'" in js and "e.origin !== YT_ORIGIN" in js
     assert 'id="pl-notes" class="pc-notes wz-prose pc-plnotes" hidden' in html and 'id="pl-video"' in html
-    # every new rule is under html[data-pc-media] except the wrapper's off state, which adds no box
-    gated = css.split('Switch episode-media (issue 27')[1].split('*/', 1)[1]
-    rules = [l.strip() for l in gated.splitlines() if '{' in l and not l.strip().startswith('@')]
-    assert rules[0] == '.pc-plmedia { display: contents; }'
-    assert all(r.startswith('html[data-pc-media] ') for r in rules[1:]), rules
+    assert '.pc-player .pc-plmedia { display: block; position: relative;' in css
+    assert '.pc-player .pc-art-xl.pc-wide { aspect-ratio: 16 / 9;' in css and '#view-episode .pc-art-lg.pc-wide {' in css
 
 
 # ------------------------------------------------------------------ issue 30: the phone's own media player
