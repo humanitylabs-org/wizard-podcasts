@@ -1703,7 +1703,7 @@ def test_friendly_phone_pass():
     assert '  .pc-ep .pc-meta-show { flex: 1 0 100%; }' in css
     assert '  .pc-ep .pc-meta-show + .pc-meta-sep { display: none; }' in css
     assert 'calc(100vh - 556px)' in css and '@media (pointer: coarse) { .pc-link { min-height: 44px; } }' in css
-    assert "W.ready({ name: 'wizard-podcasts', version: '0.5.13' })" in js
+    assert "W.ready({ name: 'wizard-podcasts', version: '0.5.14' })" in js
     node = shutil.which('node')
     if not node:
         import pytest
@@ -1943,13 +1943,20 @@ def test_episode_media_view_always_on():
 
 
 # ------------------------------------------------------------------ issue 30: the phone's own media player
-def test_phone_player_switch_declared_off_and_linked_to_issue():
+def test_phone_player_switch_removed_and_saved_value_pruned():
+    """Issue 30 (switch-default): phone-player is always on; its switch is gone and a saved value for it is pruned."""
     import server as S
-    sw = {s['id']: s for s in S.SWITCHES}['phone-player']
-    assert sw['default'] is False and sw['issues'] == ['humanitylabs-org/wizard-podcasts#30']
+    owner = {'X-Wizard-Switch': '1', 'Tailscale-User-Login': 'owner@example.com'}
+    assert 'phone-player' not in {s['id'] for s in S.SWITCHES}
+    (P.DATA / 'switches.json').write_text(json.dumps({'phone-player': True}))
+    doc = json.loads(req('GET', '/api/switches', headers=owner)[1])
+    assert doc['contract'] == 'wizard.app-switches/1'
+    assert 'phone-player' not in {s['id'] for s in doc['switches']}
+    S.prune_switches()
+    assert json.loads((P.DATA / 'switches.json').read_text()) == {}
     (P.DATA / 'switches.json').unlink(missing_ok=True)
-    assert S.switch_on('phone-player') is False
-    assert '| `phone-player`' in (ROOT / 'README.md').read_text()
+    assert '| `phone-player`' not in (ROOT / 'README.md').read_text()
+    assert 'phone-player' not in (ROOT / 'wizard.md').read_text()
 
 
 def test_phone_player_grant_and_wiring():
@@ -1958,7 +1965,7 @@ def test_phone_player_grant_and_wiring():
     html = (ROOT / 'web/index.html').read_text()
     assert html.index('src="phone-player.js"') < html.index('src="app.js"')
     js = (ROOT / 'web/app.js').read_text()
-    assert "enabled: () => switchOn('phone-player')" in js
+    assert "switchOn('phone-player')" not in js and 'enabled' not in (ROOT / 'web/phone-player.js').read_text()
     assert 'W.device.backgroundAudio.request(m, p)' in js
     # the native player is Podcasts itself: never duck it; it saves the place itself, so no periodic/beacon saves
     assert '!state.ducked && !audio.native' in js
