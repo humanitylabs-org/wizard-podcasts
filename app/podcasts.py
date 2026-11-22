@@ -238,8 +238,7 @@ def episode_dict(r, detail=False):
                       'error': r['download_error'] or None},
          'file': r['file'] or None, 'audio': f'api/episodes/{r["id"]}/audio',
          'artwork': f'api/shows/{r["show_id"]}/art' if ('art_file' in r.keys() and r['art_file']) else ''}
-    # Issue 27 (switch episode-media): the episode's own picture (falls back to the show art on the server) and its
-    # video when there is one. The page uses these only while the switch is on.
+    # Issue 27: the episode's own picture (falls back to the show art on the server) and its video when there is one.
     keys = r.keys()
     vid = _youtube_id(r['guid']) if 'guid' in keys else ''
     has_own = vid or ('image_url' in keys and r['image_url'])

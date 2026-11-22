@@ -24,8 +24,13 @@ device sees the same.
 
 | Switch | What it changes | Issue |
 |---|---|---|
-| `episode-media` (Episode pictures, notes and video) | Each episode shows its own picture (its feed image, or a YouTube video's thumbnail, kept 16:9 in Now playing and on the episode page) in the feed, episode page, Now playing, mini player and lock screen, falling back to the show's art; Now playing shows the episode's full notes under the controls; YouTube episodes and video enclosures get a Video button that plays the video in place of the cover from the current second and hands the second back to the audio when turned off. | #27 |
 | `phone-player` (Play through the phone's media player) | On the Wizard Android app (0.10.57 or newer, shell switch `wizard/lock-screen-player`), episodes play through the phone's own media player instead of the page: lock screen and notification controls with back 15 s / forward 30 s, headset buttons, artwork, a scrubbable progress bar, and they keep playing with the screen locked; the notification opens Podcasts and the player saves your place itself (every 15 s, on pause, marked played at the end). In a browser, on an older app or for previews nothing changes. Playback speed applies to the page player only for now. | #30 |
+
+`episode-media` (Episode pictures, notes and video, #27) was approved in 0.5.13 and is always on: each episode shows
+its own picture (its feed image, or a YouTube video's thumbnail, kept 16:9 in Now playing and on the episode page) in
+the feed, episode page, Now playing, mini player and lock screen, falling back to the show's art; Now playing shows the
+episode's full notes under the controls; YouTube episodes and video enclosures get a Video button that plays the video
+in place of the cover from the current second and hands the second back to the audio.
 
 `friendly-phone` (Friendlier on a phone, #18) was approved in 0.5.9 and is always on:
 on a phone, feed rows give the show name its own line and rows under a day heading show just the time; the full player

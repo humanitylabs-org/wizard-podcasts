@@ -19,7 +19,7 @@ const audio = window.PodcastsPhonePlayer ? window.PodcastsPhonePlayer.create($('
 }) : $('audio');
 const SPEEDS = [0.8, 1, 1.2, 1.5, 1.75, 2, 2.5, 3];
 const PAGE = 100;
-// episode-media (issue 27): the video shown in Now playing instead of the cover, and whose notes it shows
+// Issue 27: the video shown in Now playing instead of the cover, and whose notes it shows
 const vid = { on: false, el: null, t: 0, ep: null, playing: false, saved: 0, heard: false };
 let plNotesFor = null;
 
@@ -1126,7 +1126,7 @@ function phoneTrack(src) {
   const ep = state.current, m = /^api\/episodes\/(\d+)\/audio$/.exec(src || '');
   if (!ep || ep.preview || !m || +m[1] !== ep.id) return null;
   const base = new URL('.', location.href).pathname, show = ep.show_title || '';
-  const pic = [mediaOn() ? ep.episode_art : '', ep.artwork].find(a => /^api\/(?:episodes|shows)\/\d+\/art$/.test(a || ''));
+  const pic = [ep.episode_art, ep.artwork].find(a => /^api\/(?:episodes|shows)\/\d+\/art$/.test(a || ''));
   const t = { id: 'ep:' + ep.id, title: ep.title || '', artist: show, album: show, stream: base + src, progress: base + 'api/episodes/' + ep.id + '/progress' };
   if (pic) t.art = base + pic;
   return t;
@@ -1140,8 +1140,6 @@ function phoneStartAt() {
   return at || 0;
 }
 function applySwitches() {
-  document.documentElement.toggleAttribute('data-pc-media', mediaOn());
-  if (!mediaOn()) stopVideo(false);
   plNotesFor = null;
   const v = currentView();
   if (v === 'feed') renderFeed();
@@ -1431,7 +1429,7 @@ function mediaSession(ep) {
   if (!('mediaSession' in navigator)) return;
   try {
     navigator.mediaSession.metadata = new MediaMetadata({ title: ep.title, artist: ep.show_title || '', album: 'Podcasts',
-      artwork: mediaOn() && ep.episode_art ? [{ src: new URL(ep.episode_art, location.href).href }]
+      artwork: ep.episode_art ? [{ src: new URL(ep.episode_art, location.href).href }]
         : ep.artwork ? [{ src: new URL(ep.artwork, location.href).href, sizes: '600x600' }] : [] });
     navigator.mediaSession.setActionHandler('play', () => audio.play());
     navigator.mediaSession.setActionHandler('pause', () => audio.pause());
@@ -1582,13 +1580,12 @@ $('pl-mark').onclick = async () => {
 };
 
 // ------------------------------------------------------------------ episode pictures, notes and video (issue 27)
-// Behind the owner switch episode-media (off by default): each episode draws its own picture (api/episodes/<id>/art,
+// Each episode draws its own picture (api/episodes/<id>/art,
 // the show art when it has none; YouTube thumbnails stay 16:9 in Now playing and on the episode page), Now playing
 // shows the full notes under the controls, and episodes with a video get a Video button that swaps the cover for the
 // video at the current second and hands the second back to the audio when it is turned off, so the place still saves.
-function mediaOn() { return switchOn('episode-media'); }
 function epArt(img, ep) {
-  const own = mediaOn() && ep.episode_art && ep.episode_art !== ep.artwork;
+  const own = ep.episode_art && ep.episode_art !== ep.artwork;
   img.classList.toggle('pc-wide', !!(own && ep.episode_art_wide));
   img.onerror = own ? () => { img.onerror = null; img.classList.remove('pc-wide'); art(img, ep.artwork); } : null;
   art(img, own ? ep.episode_art : ep.artwork);
@@ -1596,7 +1593,7 @@ function epArt(img, ep) {
 async function paintPlayerNotes() {
   const ep = state.current, box = $('pl-notes');
   plNotesFor = ep ? ep.id : null;
-  if (!ep || ep.preview || !mediaOn()) { box.hidden = true; box.replaceChildren(); return; }
+  if (!ep || ep.preview) { box.hidden = true; box.replaceChildren(); return; }
   if (ep.notes_html === undefined) {
     try { const e = await api('api/episodes/' + ep.id); ep.notes_html = e.notes_html || ''; if (!ep.video) ep.video = e.video; } catch (_) { return; }
     if (state.current?.id !== ep.id || plNotesFor !== ep.id) return;
@@ -1605,7 +1602,7 @@ async function paintPlayerNotes() {
   box.hidden = !box.childNodes.length;
 }
 const YT_ORIGIN = 'https://www.youtube-nocookie.com';
-function videoOf(ep) { return mediaOn() && ep && !ep.preview && ep.video && ['youtube', 'file'].includes(ep.video.kind) ? ep.video : null; }
+function videoOf(ep) { return ep && !ep.preview && ep.video && ['youtube', 'file'].includes(ep.video.kind) ? ep.video : null; }
 function paintVideoButton() {
   const b = $('pl-video');
   b.hidden = !videoOf(state.current);
@@ -1712,7 +1709,7 @@ $('pl-video').onclick = () => { if (vid.on) stopVideo(true); else startVideo(); 
 if (!W) {
   say('Wizard system functions are unavailable. Open Podcasts through Wizard.', 'error');
 } else {
-  W.ready({ name: 'wizard-podcasts', version: '0.5.12' });
+  W.ready({ name: 'wizard-podcasts', version: '0.5.13' });
   // Domain Back: close the page on top (show, episode, player), then Discover -> My feed; at My feed the core decides.
   W.back.register({ canGoBack: () => state.stack.length > 0 || state.tab !== 'feed', back: () => popView() });
 }
