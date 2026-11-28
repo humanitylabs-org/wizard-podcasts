@@ -21,12 +21,12 @@ function fakeEl() {
   };
 }
 const TRACK = { id: 'ep:7', title: 'T', artist: 'S', album: 'S', stream: '/wizard-podcasts/api/episodes/7/audio', progress: '/wizard-podcasts/api/episodes/7/progress' };
-function rig({ apps = [APP], failLoad = false, initial = null } = {}) {
+function rig({ apps = [APP], failLoad = false, initial = null, rate = false } = {}) {
   const calls = [], el = fakeEl();
   let clock = 1000, snap = initial, tick = null;
   const request = (method, params) => {
     calls.push([method, params]);
-    if (method === 'capabilities') return apps ? Promise.resolve({ v: 1, backgroundAudio: true, ...(apps.length ? { apps } : {}) }) : Promise.reject(new Error('Background audio unavailable'));
+    if (method === 'capabilities') return apps ? Promise.resolve({ v: 1, backgroundAudio: true, ...(apps.length ? { apps } : {}), ...(rate ? { methods: ['load', 'play', 'rate'] } : {}) }) : Promise.reject(new Error('Background audio unavailable'));
     if (method === 'attach') return Promise.resolve({ sessionId: 'S1', appId: APP, index: -1, queue: [] });
     if (method === 'load') {
       if (failLoad) return Promise.reject(new Error('Untrusted track'));
@@ -38,6 +38,7 @@ function rig({ apps = [APP], failLoad = false, initial = null } = {}) {
     if (method === 'play') { snap = { ...snap, playing: true, wantPlaying: true }; return Promise.resolve(snap); }
     if (method === 'seek') { snap = { ...snap, positionMs: params.positionMs }; return Promise.resolve(snap); }
     if (method === 'stop') { snap = null; return Promise.resolve({}); }
+    if (method === 'rate') { snap = { ...snap, rate: params.value }; return Promise.resolve(snap); }
     return Promise.reject(new Error('unknown ' + method));
   };
   const a = create(el, {
@@ -179,4 +180,91 @@ test('another app (Music) takes the player: Podcasts shows paused and loads agai
   assert.ok(r.events.includes('pause'));
   await r.a.play(); await flush();
   assert.equal(r.calls.filter(c => c[0] === 'load').length, 2);
+});
+
+// Issue 35: speed buttons did nothing on the phone (0.5.14): the phone player had no speed command.
+test('a speed picked while playing on a phone player without rate carries on in the element at that speed and place', async () => {
+  const r = rig();
+  await r.a.probe();
+  r.a.src = 'api/episodes/7/audio';
+  await r.a.play(); await flush();
+  r.set({ positionMs: 800000, durationMs: 3600000 }); r.poll(); await flush();
+  r.a.playbackRate = 2; await flush();
+  assert.equal(r.a.native, false, 'off the phone player');
+  assert.deepEqual(r.calls.find(c => c[0] === 'stop'), ['stop', { sessionId: 'S1' }], 'the phone copy stops: never twice');
+  assert.equal(r.el.src, 'api/episodes/7/audio');
+  assert.equal(r.el.playbackRate, 2);
+  assert.equal(r.a.playbackRate, 2);
+  assert.equal(r.el.played, 1, 'keeps playing');
+  r.el.emit('loadedmetadata');
+  assert.equal(r.el.currentTime, 800, 'at the same second');
+});
+
+test('a paused episode switched to another speed stays paused in the element', async () => {
+  const r = rig();
+  await r.a.probe();
+  r.a.src = 'api/episodes/7/audio';
+  await r.a.play(); await flush();
+  r.a.pause(); await flush();
+  r.a.playbackRate = 1.5; await flush();
+  assert.equal(r.a.native, false);
+  assert.equal(r.el.played, 0);
+  assert.equal(r.el.playbackRate, 1.5);
+});
+
+test('the next episode at a speed other than 1x plays in the element when the phone player has no rate', async () => {
+  const r = rig();
+  await r.a.probe();
+  r.a.playbackRate = 2;
+  r.a.src = 'api/episodes/7/audio';
+  await r.a.play(); await flush();
+  assert.equal(r.a.native, false);
+  assert.equal(r.el.playbackRate, 2);
+  assert.equal(r.el.played, 1);
+  assert.ok(!names(r.calls).includes('load'));
+});
+
+test('a startup at 2x (src first, then the speed) never leaves the episode on the phone player', async () => {
+  const r = rig();
+  await r.a.probe();
+  r.a.src = 'api/episodes/7/audio';
+  r.a.playbackRate = 2;
+  await flush();
+  assert.equal(r.a.native, false);
+  assert.equal(r.el.src, 'api/episodes/7/audio');
+  await r.a.play();
+  assert.equal(r.el.played, 1);
+  assert.equal(r.el.playbackRate, 2);
+});
+
+test('repeating the same speed (the app sets it on every play) changes nothing', async () => {
+  const r = rig();
+  await r.a.probe();
+  r.a.src = 'api/episodes/7/audio';
+  await r.a.play(); await flush();
+  r.a.playbackRate = 1; await flush();
+  assert.equal(r.a.native, true);
+  assert.ok(!names(r.calls).includes('stop'));
+});
+
+test('a phone player that advertises rate keeps the episode and gets the speed on load and on change', async () => {
+  const r = rig({ rate: true });
+  await r.a.probe();
+  r.a.playbackRate = 1.5;
+  r.a.src = 'api/episodes/7/audio';
+  assert.equal(r.a.native, true);
+  await r.a.play(); await flush();
+  assert.equal(r.calls.find(c => c[0] === 'load')[1].rate, 1.5);
+  r.a.playbackRate = 2; await flush();
+  assert.equal(r.a.native, true);
+  assert.deepEqual(r.calls.find(c => c[0] === 'rate'), ['rate', { sessionId: 'S1', value: 2 }]);
+  assert.equal(r.a.playbackRate, 2);
+});
+
+test('in a browser the speed goes straight to the element', async () => {
+  const r = rig({ apps: null });
+  await r.a.probe();
+  r.a.src = 'api/episodes/7/audio';
+  r.a.playbackRate = 1.75;
+  assert.equal(r.el.playbackRate, 1.75);
 });
