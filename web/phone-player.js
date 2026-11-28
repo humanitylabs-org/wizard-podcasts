@@ -21,16 +21,24 @@
     let capable = null;   // null: not asked yet; then true/false (APK admits wizard-podcasts)
     let nat = null;       // {src, track, sessionId, loaded, st, at, want, ended, busy}
     let rate = 1, polling = false, timer = null;
+    let rateOk = false;   // issue 35: the APK's player takes a playback speed (capabilities rate / methods: ['rate'])
 
     const fire = (type, ev) => { for (const fn of [...(listeners.get(type) || [])]) { try { fn(ev || { type }); } catch (e) { setTimeout(() => { throw e; }); } } };
     for (const type of EVENTS) el.addEventListener(type, ev => { if (!nat) fire(type, ev); });
 
     function probe() {
       if (capable !== null || typeof o.request !== 'function') return Promise.resolve(!!capable);
-      return o.request('capabilities', {}).then(c => { capable = !!(c && Array.isArray(c.apps) && c.apps.includes(APP)); return capable; },
+      return o.request('capabilities', {}).then(c => {
+        capable = !!(c && Array.isArray(c.apps) && c.apps.includes(APP));
+        rateOk = !!(c && (c.rate === true || (Array.isArray(c.methods) && c.methods.includes('rate'))));
+        return capable;
+      },
         () => { capable = false; return false; });
     }
-    const wanted = src => capable === true && !!src && !!o.track(src);
+    // Issue 35: a phone player without a speed command would play at 1x whatever was picked, so any other speed stays
+    // in the page's <audio> (which honours playbackRate) until the APK advertises rate.
+    const speedOk = () => rateOk || Math.abs(rate - 1) < 0.001;
+    const wanted = src => capable === true && speedOk() && !!src && !!o.track(src);
     const ms = sec => Math.max(0, Math.round((Number(sec) || 0) * 1000));
     const pos = () => {
       if (!nat || !nat.st) return 0;
@@ -103,6 +111,38 @@
       el.playbackRate = rate;
       return el.play();
     }
+    // Issue 35: a speed the phone player can't do, picked while an episode is on it: carry on in the page's <audio> at
+    // the same second (playing if it was playing), and stop the phone's copy so it never plays twice.
+    function toElement() {
+      const mine = nat;
+      const was = mine.loaded && mine.want;
+      const at = mine.loaded && mine.st ? pos() : null;
+      if (!mine.loaded) {  // not started from here yet; after a reload the phone may still hold this episode
+        nat = null; ticking(false);
+        o.request('state', {}).then(st => {
+          if (!st || st.appId !== APP || st.index < 0 || !Array.isArray(st.queue) || (st.queue[st.index] || {}).id !== mine.track.id) return;
+          o.request('stop', { sessionId: st.sessionId }).catch(() => {});
+          if (el.getAttribute('src') === mine.src && !nat) {
+            try { el.currentTime = (st.positionMs || 0) / 1000; } catch (_) {}
+            if (st.playing || st.wantPlaying) { const p = el.play(); if (p && p.catch) p.catch(() => {}); }
+          }
+        }, () => {});
+      } else stopNative();
+      el.src = mine.src;
+      el.playbackRate = rate;
+      if (at) { const seek = () => { el.removeEventListener('loadedmetadata', seek); try { el.currentTime = at; } catch (_) {} }; el.addEventListener('loadedmetadata', seek); }
+      if (was) { const p = el.play(); if (p && p.catch) p.catch(() => {}); }
+      else if (mine.loaded) fire('pause');
+    }
+    function setRate(v) {
+      v = Number(v) || 1;
+      const changed = Math.abs(v - rate) >= 0.001;
+      rate = v;
+      if (!nat) { el.playbackRate = v; return; }
+      if (!changed) return;
+      if (!speedOk()) { toElement(); return; }
+      if (rateOk && nat.loaded) { const mine = nat; send('rate', { value: v }).then(st => { if (nat === mine) take(st); }, () => {}); }
+    }
 
     function play() {
       if (!nat) return el.play();
@@ -115,7 +155,9 @@
         if (nat !== mine) return;
         mine.sessionId = a && a.sessionId;
         const at = o.startAt();
-        return o.request('load', { sessionId: mine.sessionId, index: 0, positionMs: ms(at), skip: o.skip(), queue: [mine.track] }).then(st => {
+        const load = { sessionId: mine.sessionId, index: 0, positionMs: ms(at), skip: o.skip(), queue: [mine.track] };
+        if (rateOk) load.rate = rate;
+        return o.request('load', load).then(st => {
           if (nat !== mine) return;
           mine.loaded = true; mine.want = true; mine.st = null;
           fire('play');
@@ -151,7 +193,7 @@
       get duration() { return nat ? (nat.st && nat.st.durationMs > 0 ? nat.st.durationMs / 1000 : NaN) : el.duration; },
       get readyState() { return nat ? (nat.loaded ? 4 : 0) : el.readyState; },
       get playbackRate() { return nat ? rate : el.playbackRate; },
-      set playbackRate(v) { rate = v; if (!nat) el.playbackRate = v; },
+      set playbackRate(v) { setRate(v); },
       get error() { return nat ? null : el.error; },
       get src() { return nat ? nat.src : el.src; },
       set src(v) { setSrc(v); },

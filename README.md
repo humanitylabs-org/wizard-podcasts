@@ -29,7 +29,8 @@ Android app (0.10.57 or newer, shell switch `wizard/lock-screen-player`), episod
 player instead of the page: lock screen and notification controls with back 15 s / forward 30 s, headset buttons,
 artwork, a scrubbable progress bar, and they keep playing with the screen locked; the notification opens Podcasts and
 the player saves your place itself (every 15 s, on pause, marked played at the end). In a browser, on an older app or
-for previews nothing changes. Playback speed applies to the page player only for now.
+for previews nothing changes. A speed other than 1× plays in the page player (0.5.15, #35) until the phone's player
+advertises a `rate` command (wizard-ux#2061); then the speed goes to the phone's player.
 
 `episode-media` (Episode pictures, notes and video, #27) was approved in 0.5.13 and is always on: each episode shows
 its own picture (its feed image, or a YouTube video's thumbnail, kept 16:9 in Now playing and on the episode page) in
